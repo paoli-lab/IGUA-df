@@ -1,4 +1,6 @@
+import os
 import subprocess
+import typing
 
 import rich.progress
 
@@ -124,59 +126,76 @@ COMMANDS = {
   "countkmer",
 }
 
-def wrap_progress(
-    progress: rich.progress.Progress, 
-    process: subprocess.Popen
-):
-    """Wrap the progress output from ``mmseqs`` into a `rich` progress bar. 
-    """
-    
-    buffer = bytearray()
-    command = ""
-    task = progress.add_task(f"[bold blue]{'Running':>12}[/] [purple]{command}[/]", total=65) 
-    bar_column = next(c for c in progress.columns if isinstance(c, rich.progress.BarColumn))
-    
-    for x in iter(lambda: process.stdout.read(1), b""):
-        buffer.append(ord(x))
-        if buffer.startswith(b"["):
-            # update progress
-            progress.update(task_id=task, completed=buffer.count(b'='))
-        if buffer.endswith(b"\n"):
-            # extract current command being run
-            _command = next(iter(buffer.split()), b"").decode()
-            if _command in COMMANDS:
-                command = _command
-                bar_column.bar_width = 40 - len(command)
-                progress.reset(task_id=task, description=f"[bold blue]{'Running':>12}[/] [purple]{command}[/]")
-            # clear current buffer
-            buffer.clear()
-        
-    progress.update(task_id=task, visible=False)
-    progress.remove_task(task)
-    return process.wait()
+class MMSeqs:
 
+    def __init__(self, binary="mmseqs", progress=None, threads=None):
+        self.binary = binary
+        self.progress = progress
+        self.threads = threads
 
-def run_mmseqs(
-    progress,
-    command,
-    *args,
-    **kwargs,
-):
-    # build actual command line
-    params = ["mmseqs", command, *args]
-    for k, v in kwargs.items():
-        dash = "-" if len(k) == 1 else "--"
-        flag = "".join([dash, k.replace("_", "-")])
-        params.append(flag)
-        params.append(repr(v))
+    def _wrap_progress(
+        self,
+        process: subprocess.Popen,
+    ) -> int:
+        """Wrap the progress output from ``mmseqs`` into a `rich` progress bar.
+        """
+        assert self.progress is not None
+        assert process.stdout is not None
 
-    # invoke mmseqs subprocess
-    process = subprocess.Popen(params, stdout=subprocess.PIPE, bufsize=0)
-    wrap_progress(progress, process)
+        buffer = bytearray()
+        command = ""
+        task = self.progress.add_task(f"[bold blue]{'Running':>9}[/] [purple]{command}[/]", total=65)
+        bar_column = next(c for c in self.progress.columns if isinstance(c, rich.progress.BarColumn))
 
-    # check result
-    if process.returncode != 0:
-        raise RuntimeError(f"mmseqs failed with return code {process.returncode}")
-        
-    
+        for x in iter(lambda: process.stdout.read(1), b""):
+            buffer.append(ord(x))
+            if buffer.startswith(b"["):
+                # update progress
+                self.progress.update(task_id=task, completed=buffer.count(b'='))
+            if buffer.endswith(b"\n"):
+                # extract current command being run
+                _command = next(iter(buffer.split()), b"").decode()
+                if _command in COMMANDS:
+                    command = _command
+                    bar_column.bar_width = 40 - len(command)
+                    self.progress.reset(task_id=task, description=f"[bold blue]{'Running':>9}[/] [purple]{command}[/]")
+                # clear current buffer
+                buffer.clear()
+
+        self.progress.update(task_id=task, visible=False)
+        self.progress.remove_task(task)
+        return process.wait()
+
+    def run(
+        self,
+        command: str,
+        *args: typing.Union[str, bytes, os.PathLike],
+        **kwargs: object
+    ) -> subprocess.CompletedProcess:
+        """Run an arbitrary ``mmseqs`` command.
+        """
+        # build actual command line
+        params = [self.binary, command, *args]
+        for k, v in kwargs.items():
+            dash = "-" if len(k) == 1 else "--"
+            flag = "".join([dash, k.replace("_", "-")])
+            params.append(flag)
+            params.append(repr(v))
+
+        # use fixed number of threads
+        if self.threads is not None and (command == "easy-linclust" or command == "search"):
+            params.extend(["--threads", str(self.threads)])
+
+        # start mmseqs subprocess
+        process = subprocess.Popen(params, stdout=subprocess.PIPE, bufsize=0)
+
+        # wrap progress if a rich progress bar is available
+        if self.progress:
+            self._wrap_progress(process)
+
+        # return a completed process instance for compatibility
+        return subprocess.CompletedProcess(
+            params,
+            process.returncode
+        )
 
