@@ -55,7 +55,6 @@ def write_cluster(record: gb_io.Record, file: typing.TextIO) -> None:
 def extract_sequences(progress: rich.progress.Progress, inputs: typing.List[pathlib.Path], output: pathlib.Path) -> typing.Dict[str, int]:
     clusters_lengths = {}
     n_duplicate = 0
-    progress.console.print(f"[bold blue]{'Loading':>12}[/] input clusters")
     with open(output, "w") as dst:
         for input_path in inputs:
             task = progress.add_task(f"[bold blue]{'Reading':>9}[/]")
@@ -66,7 +65,6 @@ def extract_sequences(progress: rich.progress.Progress, inputs: typing.List[path
                     write_cluster(record, dst)
                     clusters_lengths[record.name] = len(record.sequence)
             progress.remove_task(task)
-    progress.console.print(f"[bold green]{'Loaded':>12}[/] {len(clusters_lengths)} clusters to process")
     if n_duplicate > 0:
         progress.console.print(f"[bold yellow]{'Skipped':>12}[/] {n_duplicate} clusters with duplicate identifiers")
     return clusters_lengths
@@ -98,7 +96,6 @@ def cluster_sequences(mmseqs: MMSeqs, input_path: pathlib.Path, output_prefix: p
     )
 
 def extract_proteins(progress: rich.progress.Progress, inputs: typing.List[pathlib.Path], output: pathlib.Path, representatives: typing.Container[str]) -> typing.Dict[str, int]:
-    progress.console.print(f"[bold blue]{'Extracting':>12}[/] protein sequences from clusters")
     protein_sizes = {}
     with output.open("w") as dst:
         for input_path in inputs:
@@ -134,24 +131,13 @@ def cluster_proteins(mmseqs: MMSeqs, input_path: pathlib.Path, output_prefix: pa
         cov_mode=0,
     )
 
-def make_identity_matrix(progress: rich.progress.Progress, input_path: pathlib.Path, representatives: typing.Dict[str, int]) -> scipy.sparse.spmatrix:
-    # make identity matrix
-    progress.console.print(f"[bold blue]{'Creating':>12}[/] weighted identity matrix")
-    r = len(representatives)
-    identity_matrix = numpy.zeros((r, r))
-    task = progress.add_task(description=f"[bold blue]{'Reading':>9}[/]")
-    with progress.open(input_path, "r", task_id=task) as f:
-        for row in csv.reader(f, dialect="excel-tab"):
-            query, target, pident, length, mismatch, gapopen, qstart, qend, sstart, send, evalue, bitscore = row
-            if float(evalue) >= 1e-5:
-                continue
-            query_cluster = query.rsplit("_", 1)[0]
-            target_cluster = target.rsplit("_", 1)[0]
-            query_index = representatives[query_cluster]
-            target_index = representatives[target_cluster]
-            identity_matrix[query_index, target_index] += int(int(length)*float(pident))
-    progress.remove_task(task)
-    return numpy.add(identity_matrix, identity_matrix.T, out=identity_matrix)
+def make_compositions(protein_clusters: pandas.DataFrame, representatives: typing.Dict[str, int], protein_representatives: typing.Dict[str, int], protein_sizes: typing.Dict[str, int]) -> scipy.sparse.csr_matrix:
+    compositions = scipy.sparse.dok_matrix((len(representatives), len(protein_representatives)), dtype=numpy.int64) #scipy.sparse.dok_matrix((r, p), dtype=numpy.int32)
+    for row in protein_clusters.itertuples():
+        cluster_index = representatives[row.cluster_id]
+        prot_index = protein_representatives[row.protein_representative]
+        compositions[cluster_index, prot_index] += protein_sizes[row.protein_representative]
+    return compositions.tocsr()
 
 def main(argv: typing.Optional[typing.List[str]] = None) -> int:
     # build parser and get arguments
@@ -178,7 +164,9 @@ def main(argv: typing.Optional[typing.List[str]] = None) -> int:
 
         # extract raw sequences
         clusters_fna = workdir.joinpath("clusters.fna")
+        progress.console.print(f"[bold blue]{'Loading':>12}[/] input clusters")
         sequence_lengths = extract_sequences(progress, args.input, clusters_fna)
+        progress.console.print(f"[bold green]{'Loaded':>12}[/] {len(sequence_lengths)} clusters to process")
 
         # deduplicate fragments
         if not workdir.joinpath("step1_cluster.tsv").exists():
@@ -188,9 +176,9 @@ def main(argv: typing.Optional[typing.List[str]] = None) -> int:
             workdir.joinpath("step1_cluster.tsv"),
             sep="\t",
             header=None,
-            names=["gcf1_representative", "cluster_id"]
+            names=["fragment_representative", "cluster_id"]
         )
-        progress.console.print(f"[bold green]{'Reduced':>12}[/] {len(gcfs1)} clusters to {len(gcfs1.gcf1_representative.unique())} complete representatives")
+        progress.console.print(f"[bold green]{'Reduced':>12}[/] {len(gcfs1)} clusters to {len(gcfs1.fragment_representative.unique())} complete representatives")
 
         # cluster sequences
         if not workdir.joinpath("step2_cluster.tsv").exists():
@@ -200,19 +188,27 @@ def main(argv: typing.Optional[typing.List[str]] = None) -> int:
             workdir.joinpath("step2_cluster.tsv"),
             sep="\t",
             header=None,
-            names=["gcf2_representative", "gcf1_representative"]
+            names=["nucleotide_representative", "fragment_representative"]
         )
-        progress.console.print(f"[bold green]{'Reduced':>12}[/] {len(gcfs2)} clusters to {len(gcfs2.gcf2_representative.unique())} nucleotide representatives")
+        progress.console.print(f"[bold green]{'Reduced':>12}[/] {len(gcfs2)} clusters to {len(gcfs2.nucleotide_representative.unique())} nucleotide representatives")
 
         # load representatives
         progress.console.print(f"[bold blue]{'Extracting':>12}[/] representative clusters")
-        representatives = { x:i for i,x in enumerate(sorted(gcfs2["gcf2_representative"].unique())) }
+        representatives = { x:i for i,x in enumerate(sorted(gcfs2["nucleotide_representative"].unique())) }
         r = len(representatives)
         progress.console.print(f"[bold green]{'Loaded':>12}[/] {r} nucleotide representative clusters")
 
         # extract proteins and record sizes
         proteins_faa = workdir.joinpath("proteins.faa")
+        progress.console.print(f"[bold blue]{'Extracting':>12}[/] protein sequences from clusters")
         protein_sizes = extract_proteins(progress, args.input, proteins_faa, representatives)
+
+        # compute the number of amino acids per cluster
+        clusters_aa = numpy.zeros(r, dtype=numpy.int32)
+        for protein_id, protein_size in protein_sizes.items():
+            cluster_id = protein_id.rsplit("_", 1)[0]
+            cluster_index = representatives[cluster_id]
+            clusters_aa[cluster_index] += protein_size
 
         # cluster proteins
         if not workdir.joinpath("step3_cluster.tsv").exists():
@@ -232,11 +228,7 @@ def main(argv: typing.Optional[typing.List[str]] = None) -> int:
 
         # build weighted compositional array
         progress.console.print(f"[bold blue]{'Building':>12}[/] weighted compositional array")
-        compositions = scipy.sparse.dok_matrix((r, p), dtype=numpy.int64) #scipy.sparse.dok_matrix((r, p), dtype=numpy.int32)
-        for row in prot_clusters.itertuples():
-            cluster_index = representatives[row.cluster_id]
-            prot_index = protein_representatives[row.protein_representative]
-            compositions[cluster_index, prot_index] += protein_sizes[row.protein_representative]
+        compositions = make_compositions(prot_clusters, representatives, protein_representatives, protein_sizes)
 
         # compute distances
         progress.console.print(f"[bold blue]{'Computing':>12}[/] pairwise distance based on protein composition")
@@ -246,29 +238,44 @@ def main(argv: typing.Optional[typing.List[str]] = None) -> int:
             n_jobs=args.jobs
         )
 
-        # run clustering
+        # ponderate distances by sum of the two clusters:
+        # at worse they have zero genes in common, so getting from cluster 1 to
+        # cluster two means removing all genes from cluster 1 and adding all genes
+        # from cluster 2, which translates to a Manhattan distance of A + B,
+        # and a distance of 1.0 once normalized
+        cluster_sizes = numpy.tile(clusters_aa, r).reshape(-1, r)
+        numpy.add(cluster_sizes, cluster_sizes.T, out=cluster_sizes)
+        numpy.divide(distance_matrix, cluster_sizes, out=distance_matrix)
+
+        # run hierarchical clustering
         progress.console.print(f"[bold blue]{'Clustering':>12}[/] gene clusters using average linkage")
         Z = linkage(distance_matrix, method="average")
-        flat = scipy.cluster.hierarchy.fcluster(Z, criterion="distance", t=0.1)
+        flat = scipy.cluster.hierarchy.fcluster(Z, criterion="distance", t=0.5)
 
-        # build GCFs based on
+        # build GCFs based on flat clustering
         gcfs3 = pandas.DataFrame({
             "gcf_id": [ f"{args.prefix}{i:07}" for i in flat ],
-            "gcf2_representative": sorted(representatives),
+            "nucleotide_representative": sorted(representatives),
         })
         progress.console.print(f"[bold green]{'Built':>12}[/] {len(gcfs3.gcf_id.unique())} GCFs from {len(sequence_lengths)} initial clusters")
 
+        # extract protein representative using the largest cluster of each GCF
+        gcf3_representatives = {}
+        for gcf_id, rows in gcfs3.groupby("gcf_id", sort=False):
+            gcf3_representatives[gcf_id] = max(rows["nucleotide_representative"], key=sequence_lengths.__getitem__)
+        gcfs3["gcf_representative"] = gcfs3["gcf_id"].apply(gcf3_representatives.__getitem__)
+
         # build final GCF table
         gcfs = pandas.merge(
-            pandas.merge(gcfs1, gcfs2, on="gcf1_representative"),
+            pandas.merge(gcfs1, gcfs2, on="fragment_representative"),
             gcfs3,
-            on="gcf2_representative",
+            on="nucleotide_representative",
         )
 
         # save results
-        gcfs = gcfs.sort_values("gcf_id")
-        gcfs = gcfs[["cluster_id", "gcf_id", "gcf1_representative", "gcf2_representative"]]
+        gcfs.sort_values("gcf_id", inplace=True)
+        gcfs = gcfs[["cluster_id", "gcf_id", "gcf_representative", "nucleotide_representative", "fragment_representative"]]
         gcfs.to_csv(args.output, sep="\t", index=False)
-
+        progress.console.print(f"[bold green]{'Saved':>12}[/] final GCFs table to {str(args.output)!r}")
 
 
