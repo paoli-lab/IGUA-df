@@ -9,6 +9,7 @@ import pathlib
 import tempfile
 import subprocess
 import typing
+import multiprocessing.pool
 
 import gb_io
 import rich
@@ -16,6 +17,7 @@ import numpy
 import pandas
 import scipy.sparse
 import scipy.cluster.hierarchy
+from sklearn.metrics.pairwise import pairwise_distances
 
 try:
     from fastcluster import linkage
@@ -215,33 +217,33 @@ def main(argv: typing.Optional[typing.List[str]] = None) -> int:
         # cluster proteins
         if not workdir.joinpath("step3_cluster.tsv").exists():
             cluster_proteins(mmseqs, proteins_faa, workdir.joinpath("step3"), workdir.joinpath("tmp"))
+        prot_clusters = pandas.read_csv(
+            workdir.joinpath("step3_cluster.tsv"),
+            sep="\t",
+            header=None,
+            names=["protein_representative", "protein_id"]
+        )
 
-        # read results
-        prot_clusters = pandas.read_table(workdir.joinpath("step3_cluster.tsv"), names=["protein_representative", "protein_id"])
+        # extract protein representatives
         prot_clusters["cluster_id"] = prot_clusters["protein_id"].str.rsplit("_", 1).str[0]
         protein_representatives = { x: i for i, x in enumerate(sorted(prot_clusters['protein_representative'].unique())) }
         p = len(protein_representatives)
         progress.console.print(f"[bold green]{'Found':>12}[/] {p} protein representatives for {len(prot_clusters)} proteins")
 
-        # build compositional array
-        progress.console.print(f"[bold blue]{'Building':>12}[/] compositional array")
-        compositions = numpy.zeros((r, p), dtype=numpy.int8) #scipy.sparse.dok_matrix((r, p), dtype=numpy.int32)
+        # build weighted compositional array
+        progress.console.print(f"[bold blue]{'Building':>12}[/] weighted compositional array")
+        compositions = scipy.sparse.dok_matrix((r, p), dtype=numpy.int64) #scipy.sparse.dok_matrix((r, p), dtype=numpy.int32)
         for row in prot_clusters.itertuples():
             cluster_index = representatives[row.cluster_id]
             prot_index = protein_representatives[row.protein_representative]
-            compositions[cluster_index, prot_index] += 1
-
-        # compute weights using protein sizes
-        weights = numpy.zeros(p, dtype=numpy.int32)
-        for protein_id, protein_index in protein_representatives.items():
-            weights[protein_index] = protein_sizes[protein_id]
+            compositions[cluster_index, prot_index] += protein_sizes[row.protein_representative]
 
         # compute distances
         progress.console.print(f"[bold blue]{'Computing':>12}[/] pairwise distance based on protein composition")
-        distance_matrix = scipy.spatial.distance.pdist(
-            compositions,
+        distance_matrix = pairwise_distances(
+            compositions.tocsr(),
             metric="cityblock",
-            w=weights,
+            n_jobs=args.jobs
         )
 
         # run clustering
