@@ -383,7 +383,7 @@ def main(argv: typing.Optional[typing.List[str]] = None) -> int:
             f"[bold blue]{'Computing':>12}[/] pairwise distance based on protein composition"
         )
         distance_matrix = pairwise_distances(
-            compositions.tocsr(), metric="cityblock", n_jobs=args.jobs
+            compositions, metric="cityblock", n_jobs=args.jobs
         )
         cluster_sizes = numpy.tile(clusters_aa, r).reshape(-1, r)
         cluster_sizes += cluster_sizes.T
