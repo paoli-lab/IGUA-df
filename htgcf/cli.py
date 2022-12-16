@@ -367,22 +367,16 @@ def main(argv: typing.Optional[typing.List[str]] = None) -> int:
             prot_clusters, representatives, protein_representatives, protein_sizes
         )
 
-        # compute distances
+        # compute and ponderate distances
         progress.console.print(
             f"[bold blue]{'Computing':>12}[/] pairwise distance based on protein composition"
         )
         distance_matrix = pairwise_distances(
             compositions.tocsr(), metric="cityblock", n_jobs=args.jobs
         )
-
-        # ponderate distances by sum of the two clusters:
-        # at worse they have zero genes in common, so getting from cluster 1 to
-        # cluster two means removing all genes from cluster 1 and adding all genes
-        # from cluster 2, which translates to a Manhattan distance of A + B,
-        # and a distance of 1.0 once normalized
         cluster_sizes = numpy.tile(clusters_aa, r).reshape(-1, r)
-        numpy.add(cluster_sizes, cluster_sizes.T, out=cluster_sizes)
-        numpy.divide(distance_matrix, cluster_sizes, out=distance_matrix)
+        cluster_sizes += cluster_sizes.T
+        distance_matrix /= cluster_sizes
 
         # run hierarchical clustering
         progress.console.print(
