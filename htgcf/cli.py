@@ -3,7 +3,9 @@ import collections
 import contextlib
 import csv
 import functools
+import gzip
 import itertools
+import io
 import os
 import pathlib
 import tempfile
@@ -37,9 +39,14 @@ except ImportError:
 
 from .mmseqs import MMSeqs
 
+_GZIP_MAGIC = b'\x1f\x8b'
+
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(formatter_class=HelpFormatter)
+    parser = argparse.ArgumentParser(
+        prog="htgcf",
+        formatter_class=HelpFormatter
+    )
     parser.add_argument(
         "-i",
         "--input",
@@ -109,7 +116,9 @@ def extract_sequences(
     with open(output, "w") as dst:
         for input_path in inputs:
             task = progress.add_task(f"[bold blue]{'Reading':>9}[/]")
-            with progress.open(input_path, "rb", task_id=task) as reader:
+            with io.BufferedReader(progress.open(input_path, "rb", task_id=task)) as reader:
+                if reader.peek().startswith(_GZIP_MAGIC):
+                    reader = gzip.GzipFile(mode="rb", fileobj=reader)
                 for record in gb_io.iter(reader):
                     if record.name in clusters_lengths:
                         n_duplicate += 1
@@ -171,7 +180,9 @@ def extract_proteins(
     with output.open("w") as dst:
         for input_path in inputs:
             task = progress.add_task(f"[bold blue]{'Reading':>9}[/]")
-            with progress.open(input_path, "rb", task_id=task) as reader:
+            with io.BufferedReader(progress.open(input_path, "rb", task_id=task)) as reader:
+                if reader.peek()[:2] == b'\x1f\x8b':
+                    reader = gzip.GzipFile(mode="rb", fileobj=reader)
                 for record in gb_io.iter(reader):
                     if record.name in representatives:
                         for i, feat in enumerate(
