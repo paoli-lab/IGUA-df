@@ -18,8 +18,8 @@ import rich
 import numpy
 import pandas
 import scipy.sparse
-import scipy.cluster.hierarchy
-from sklearn.metrics.pairwise import pairwise_distances
+from sklearn.metrics.pairwise import pairwise_distances, manhattan_distances
+from scipy.cluster.hierarchy import fcluster
 
 try:
     from fastcluster import linkage as _linkage
@@ -241,6 +241,31 @@ def make_compositions(
         ]
     return compositions.tocsr()
 
+def compute_distances(
+    progress: rich.progress.Progress,
+    compositions: scipy.sparse.csr_matrix,
+    clusters_aa: numpy.ndarray,
+    jobs: typing.Optional[int],
+) -> numpy.ndarray:
+    n = 0
+    r = compositions.shape[0]
+    distance_vector = numpy.zeros(r*(r-1) // 2)
+    task = progress.add_task(description=f"[bold blue]{'Working':>9}[/]", total=distance_vector.shape[0])
+    for i in range(r-1):
+        l = r - (i+1)
+        # compute distances for row i
+        distance_vector[n:n+l] = pairwise_distances(
+            compositions[i:i+1],
+            compositions[i+1:],
+            metric="cityblock",
+            n_jobs=jobs
+        )[0]
+        # ponderate by maximum amino-acid distance
+        distance_vector[n:n+l] /= clusters_aa[i+1:] + clusters_aa[i]
+        progress.update(task_id=task, advance=l)
+        n += l
+    progress.remove_task(task)
+    return distance_vector
 
 def main(argv: typing.Optional[typing.List[str]] = None) -> int:
     # build parser and get arguments
@@ -382,19 +407,16 @@ def main(argv: typing.Optional[typing.List[str]] = None) -> int:
         progress.console.print(
             f"[bold blue]{'Computing':>12}[/] pairwise distance based on protein composition"
         )
-        distance_matrix = pairwise_distances(
-            compositions, metric="cityblock", n_jobs=args.jobs
+        distance_vector = compute_distances(
+            progress, compositions, clusters_aa, args.jobs
         )
-        cluster_sizes = numpy.tile(clusters_aa, r).reshape(-1, r)
-        cluster_sizes += cluster_sizes.T
-        distance_matrix /= cluster_sizes
 
         # run hierarchical clustering
         progress.console.print(
             f"[bold blue]{'Clustering':>12}[/] gene clusters using average linkage"
         )
-        Z = linkage(distance_matrix, method=args.clustering_method)
-        flat = scipy.cluster.hierarchy.fcluster(Z, criterion="distance", t=args.clustering_distance)
+        Z = linkage(distance_vector, method=args.clustering_method)
+        flat = fcluster(Z, criterion="distance", t=args.clustering_distance)
 
         # build GCFs based on flat clustering
         gcfs3 = pandas.DataFrame(
@@ -439,3 +461,5 @@ def main(argv: typing.Optional[typing.List[str]] = None) -> int:
         progress.console.print(
             f"[bold green]{'Saved':>12}[/] final GCFs table to {str(args.output)!r}"
         )
+
+    return 0
