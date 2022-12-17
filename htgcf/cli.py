@@ -142,7 +142,7 @@ def deduplicate_sequences(
     # prepare paths for the MMSeqs2 databases
     indb_path = input_path.with_suffix(".db")
     outdb_path = output_prefix.with_suffix(".db")
-    repdb_path = output_prefix.with_stem(f"{output_prefix.stem}_rep_seq.db")
+    repdb_path = output_prefix.with_name(f"{output_prefix.name}_rep_seq.db")
     # create input database (zero-copy, as we formatted the input as two-line FASTA)
     mmseqs.run(
         "createdb",
@@ -175,7 +175,7 @@ def deduplicate_sequences(
         indb_path,
         indb_path,
         outdb_path,
-        output_prefix.with_stem(f"{output_prefix.stem}_cluster.tsv"),
+        output_prefix.with_name(f"{output_prefix.name}_cluster.tsv"),
     ).check_returncode()
     # build `rep_seq.fasta` file, which is needed for second nucleotide step
     mmseqs.run(
@@ -240,7 +240,7 @@ def cluster_sequences(
         indb_path,
         indb_path,
         outdb_path,
-        output_prefix.with_stem(f"{output_prefix.stem}_cluster.tsv"),
+        output_prefix.with_name(f"{output_prefix.name}_cluster.tsv"),
     ).check_returncode()
     # remove temporary files
     mmseqs.run("rmdb", indb_path)
@@ -323,7 +323,7 @@ def cluster_proteins(
         indb_path,
         indb_path,
         outdb_path,
-        output_prefix.with_stem(f"{output_prefix.stem}_cluster.tsv"),
+        output_prefix.with_name(f"{output_prefix.name}_cluster.tsv"),
     ).check_returncode()
     # remove temporary files
     mmseqs.run("rmdb", indb_path)
