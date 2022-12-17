@@ -116,9 +116,9 @@ def extract_sequences(
     with open(output, "w") as dst:
         for input_path in inputs:
             task = progress.add_task(f"[bold blue]{'Reading':>9}[/]")
-            with io.BufferedReader(progress.open(input_path, "rb", task_id=task)) as reader:
+            with io.BufferedReader(progress.open(input_path, "rb", task_id=task)) as reader:  # type: ignore
                 if reader.peek().startswith(_GZIP_MAGIC):
-                    reader = gzip.GzipFile(mode="rb", fileobj=reader)
+                    reader = gzip.GzipFile(mode="rb", fileobj=reader)  # type: ignore
                 for record in gb_io.iter(reader):
                     if record.name in clusters_lengths:
                         n_duplicate += 1
@@ -256,9 +256,9 @@ def extract_proteins(
     with output.open("w") as dst:
         for input_path in inputs:
             task = progress.add_task(f"[bold blue]{'Reading':>9}[/]")
-            with io.BufferedReader(progress.open(input_path, "rb", task_id=task)) as reader:
+            with io.BufferedReader(progress.open(input_path, "rb", task_id=task)) as reader:  # type: ignore
                 if reader.peek()[:2] == b'\x1f\x8b':
-                    reader = gzip.GzipFile(mode="rb", fileobj=reader)
+                    reader = gzip.GzipFile(mode="rb", fileobj=reader)  # type: ignore
                 for record in gb_io.iter(reader):
                     if record.name in representatives:
                         for i, feat in enumerate(
@@ -330,6 +330,7 @@ def cluster_proteins(
 
 
 def make_compositions(
+    progress: rich.progress.Progress,
     protein_clusters: pandas.DataFrame,
     representatives: typing.Dict[str, int],
     protein_representatives: typing.Dict[str, int],
@@ -337,13 +338,15 @@ def make_compositions(
 ) -> scipy.sparse.csr_matrix:
     compositions = scipy.sparse.dok_matrix(
         (len(representatives), len(protein_representatives)), dtype=numpy.int64
-    )  # scipy.sparse.dok_matrix((r, p), dtype=numpy.int32)
-    for row in protein_clusters.itertuples():
+    )
+    task = progress.add_task(description=f"[bold blue]{'Working':>9}[/]", total=len(protein_clusters))
+    for row in progress.track(protein_clusters.itertuples(), task_id=task):
         cluster_index = representatives[row.cluster_id]
         prot_index = protein_representatives[row.protein_representative]
         compositions[cluster_index, prot_index] += protein_sizes[
             row.protein_representative
         ]
+    progress.remove_task(task)
     return compositions.tocsr()
 
 
@@ -454,9 +457,8 @@ def main(argv: typing.Optional[typing.List[str]] = None) -> int:
             x: i
             for i, x in enumerate(sorted(gcfs2["nucleotide_representative"].unique()))
         }
-        r = len(representatives)
         progress.console.print(
-            f"[bold green]{'Loaded':>12}[/] {r} nucleotide representative clusters"
+            f"[bold green]{'Loaded':>12}[/] {len(representatives)} nucleotide representative clusters"
         )
 
         # extract proteins and record sizes
@@ -469,7 +471,7 @@ def main(argv: typing.Optional[typing.List[str]] = None) -> int:
         )
 
         # compute the number of amino acids per cluster
-        clusters_aa = numpy.zeros(r, dtype=numpy.int32)
+        clusters_aa = numpy.zeros(len(representatives), dtype=numpy.int32)
         for protein_id, protein_size in protein_sizes.items():
             cluster_id = protein_id.rsplit("_", 1)[0]
             cluster_index = representatives[cluster_id]
@@ -497,9 +499,8 @@ def main(argv: typing.Optional[typing.List[str]] = None) -> int:
                 sorted(prot_clusters["protein_representative"].unique())
             )
         }
-        p = len(protein_representatives)
         progress.console.print(
-            f"[bold green]{'Found':>12}[/] {p} protein representatives for {len(prot_clusters)} proteins"
+            f"[bold green]{'Found':>12}[/] {len(protein_representatives)} protein representatives for {len(prot_clusters)} proteins"
         )
 
         # build weighted compositional array
@@ -507,7 +508,7 @@ def main(argv: typing.Optional[typing.List[str]] = None) -> int:
             f"[bold blue]{'Building':>12}[/] weighted compositional array"
         )
         compositions = make_compositions(
-            prot_clusters, representatives, protein_representatives, protein_sizes
+            progress, prot_clusters, representatives, protein_representatives, protein_sizes
         )
 
         # compute and ponderate distances
