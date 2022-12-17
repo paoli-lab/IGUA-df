@@ -18,7 +18,6 @@ import rich
 import numpy
 import pandas
 import scipy.sparse
-from sklearn.metrics.pairwise import pairwise_distances, manhattan_distances
 from scipy.cluster.hierarchy import fcluster
 
 try:
@@ -38,6 +37,8 @@ except ImportError:
     from argparse import HelpFormatter
 
 from .mmseqs import MMSeqs
+from ._manhattan import sparse_manhattan
+
 
 _GZIP_MAGIC = b'\x1f\x8b'
 
@@ -359,21 +360,19 @@ def compute_distances(
     n = 0
     r = compositions.shape[0]
     distance_vector = numpy.zeros(r*(r-1) // 2)
-    task = progress.add_task(description=f"[bold blue]{'Working':>9}[/]", total=distance_vector.shape[0])
+    # compute manhattan distance on sparse matrix
+    sparse_manhattan(
+        compositions.data,
+        compositions.indices,
+        compositions.indptr,
+        distance_vector,
+        threads=jobs,
+    )
+    # ponderate by sum of amino-acid distance
     for i in range(r-1):
         l = r - (i+1)
-        # compute distances for row i
-        distance_vector[n:n+l] = pairwise_distances(
-            compositions[i:i+1],
-            compositions[i+1:],
-            metric="cityblock",
-            n_jobs=jobs
-        )[0]
-        # ponderate by maximum amino-acid distance
         distance_vector[n:n+l] /= clusters_aa[i+1:] + clusters_aa[i]
-        progress.update(task_id=task, advance=l)
         n += l
-    progress.remove_task(task)
     return distance_vector
 
 
