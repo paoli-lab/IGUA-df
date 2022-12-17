@@ -138,17 +138,64 @@ def deduplicate_sequences(
     output_prefix: pathlib.Path,
     tmpdir: pathlib.Path,
 ):
+    # prepare paths for the MMSeqs2 databases
+    indb_path = input_path.with_suffix(".db")
+    outdb_path = output_prefix.with_suffix(".db")
+    repdb_path = output_prefix.with_stem(f"{output_prefix.stem}_rep_seq.db")
+    # create input database (zero-copy, as we formatted the input as two-line FASTA)
     mmseqs.run(
-        "easy-linclust",
+        "createdb",
         input_path,
-        output_prefix,
-        tmpdir,
+        indb_path,
+        dbtype=2,
+        shuffle=1,
         createdb_mode=1,
+        write_lookup=0,
+        id_offset=0,
+        compressed=0,
+    ).check_returncode()
+    # run clustering
+    mmseqs.run(
+        "linclust",
+        indb_path,
+        outdb_path,
+        tmpdir,
+        e=0.001,
         min_seq_id=0.85,
         c=1,
         cluster_mode=0,
         cov_mode=1,
+        spaced_kmer_mode=0,
+        remove_tmp_files=1,
     ).check_returncode()
+    # build `clusters.tsv` file, which is needed for the final tables
+    mmseqs.run(
+        "createtsv",
+        indb_path,
+        indb_path,
+        outdb_path,
+        output_prefix.with_stem(f"{output_prefix.stem}_cluster.tsv"),
+    ).check_returncode()
+    # build `rep_seq.fasta` file, which is needed for second nucleotide step
+    mmseqs.run(
+        "result2repseq",
+        indb_path,
+        outdb_path,
+        repdb_path,
+        db_load_mode=0,
+        compressed=0,
+    ).check_returncode()
+    mmseqs.run(
+        "result2flat",
+        indb_path,
+        indb_path,
+        repdb_path,
+        repdb_path.with_suffix(".fasta"),
+    )
+    # remove temporary files
+    mmseqs.run("rmdb", indb_path)
+    mmseqs.run("rmdb", outdb_path)
+    mmseqs.run("rmdb", repdb_path)
 
 
 def cluster_sequences(
@@ -157,17 +204,46 @@ def cluster_sequences(
     output_prefix: pathlib.Path,
     tmpdir: pathlib.Path,
 ):
+    # prepare paths for the MMSeqs2 databases
+    indb_path = input_path.with_suffix(".db")
+    outdb_path = output_prefix.with_suffix(".db")
+    # create input database (zero-copy, as we formatted the input as two-line FASTA)
     mmseqs.run(
-        "easy-linclust",
+        "createdb",
         input_path,
-        output_prefix,
-        tmpdir,
+        indb_path,
+        dbtype=2,
+        shuffle=1,
         createdb_mode=1,
+        write_lookup=0,
+        id_offset=0,
+        compressed=0,
+    ).check_returncode()
+    # run clustering
+    mmseqs.run(
+        "linclust",
+        indb_path,
+        outdb_path,
+        tmpdir,
+        e=0.001,
         min_seq_id=0.6,
         c=0.5,
         cluster_mode=0,
         cov_mode=0,
+        spaced_kmer_mode=0,
+        remove_tmp_files=1,
     ).check_returncode()
+    # build `clusters.tsv` file, which is needed for the final tables
+    mmseqs.run(
+        "createtsv",
+        indb_path,
+        indb_path,
+        outdb_path,
+        output_prefix.with_stem(f"{output_prefix.stem}_cluster.tsv"),
+    ).check_returncode()
+    # remove temporary files
+    mmseqs.run("rmdb", indb_path)
+    mmseqs.run("rmdb", outdb_path)
 
 
 def extract_proteins(
@@ -211,17 +287,46 @@ def cluster_proteins(
     output_prefix: pathlib.Path,
     tmpdir: pathlib.Path,
 ):
+    # prepare paths for the MMSeqs2 databases
+    indb_path = input_path.with_suffix(".db")
+    outdb_path = output_prefix.with_suffix(".db")
+    # create input database (zero-copy, as we formatted the input as two-line FASTA)
     mmseqs.run(
-        "easy-linclust",
+        "createdb",
         input_path,
-        output_prefix,
-        tmpdir,
+        indb_path,
+        dbtype=1,
+        shuffle=1,
         createdb_mode=1,
+        write_lookup=0,
+        id_offset=0,
+        compressed=0,
+    ).check_returncode()
+    # run clustering
+    mmseqs.run(
+        "linclust",
+        indb_path,
+        outdb_path,
+        tmpdir,
+        e=0.001,
         min_seq_id=0.6,
         c=0.5,
         cluster_mode=0,
         cov_mode=0,
+        spaced_kmer_mode=0,
+        remove_tmp_files=1,
     ).check_returncode()
+    # build `clusters.tsv` file, which is needed for the final tables
+    mmseqs.run(
+        "createtsv",
+        indb_path,
+        indb_path,
+        outdb_path,
+        output_prefix.with_stem(f"{output_prefix.stem}_cluster.tsv"),
+    ).check_returncode()
+    # remove temporary files
+    mmseqs.run("rmdb", indb_path)
+    mmseqs.run("rmdb", outdb_path)
 
 
 def make_compositions(
@@ -240,6 +345,7 @@ def make_compositions(
             row.protein_representative
         ]
     return compositions.tocsr()
+
 
 def compute_distances(
     progress: rich.progress.Progress,
@@ -266,6 +372,7 @@ def compute_distances(
         n += l
     progress.remove_task(task)
     return distance_vector
+
 
 def main(argv: typing.Optional[typing.List[str]] = None) -> int:
     # build parser and get arguments
@@ -305,7 +412,7 @@ def main(argv: typing.Optional[typing.List[str]] = None) -> int:
             progress.console.print(
                 f"[bold blue]{'Starting':>12}[/] nucleotide deduplication step with [purple]mmseqs[/]"
             )
-            gcfs1 = deduplicate_sequences(
+            deduplicate_sequences(
                 mmseqs, clusters_fna, workdir.joinpath("step1"), workdir.joinpath("tmp")
             )
         gcfs1 = pandas.read_csv(
