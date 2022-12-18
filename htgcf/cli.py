@@ -338,7 +338,7 @@ def make_compositions(
     protein_sizes: typing.Dict[str, int],
 ) -> scipy.sparse.csr_matrix:
     compositions = scipy.sparse.dok_matrix(
-        (len(representatives), len(protein_representatives)), dtype=numpy.int64
+        (len(representatives), len(protein_representatives)), dtype=numpy.int16
     )
     task = progress.add_task(description=f"[bold blue]{'Working':>9}[/]", total=len(protein_clusters))
     for row in progress.track(protein_clusters.itertuples(), task_id=task):
