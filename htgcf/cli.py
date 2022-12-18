@@ -359,7 +359,7 @@ def compute_distances(
 ) -> numpy.ndarray:
     n = 0
     r = compositions.shape[0]
-    distance_vector = numpy.zeros(r*(r-1) // 2)
+    distance_vector = numpy.zeros(r*(r-1) // 2, dtype=numpy.double)
     # compute manhattan distance on sparse matrix
     sparse_manhattan(
         compositions.data,
