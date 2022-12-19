@@ -123,8 +123,9 @@ def extract_sequences(
                 for record in gb_io.iter(reader):
                     if record.name in clusters_lengths:
                         n_duplicate += 1
-                    write_cluster(record, dst)
-                    clusters_lengths[record.name] = len(record.sequence)
+                    else:
+                        write_cluster(record, dst)
+                        clusters_lengths[record.name] = len(record.sequence)
             progress.remove_task(task)
     if n_duplicate > 0:
         progress.console.print(
@@ -469,13 +470,6 @@ def main(argv: typing.Optional[typing.List[str]] = None) -> int:
             progress, args.input, proteins_faa, representatives
         )
 
-        # compute the number of amino acids per cluster
-        clusters_aa = numpy.zeros(len(representatives), dtype=numpy.int32)
-        for protein_id, protein_size in protein_sizes.items():
-            cluster_id = protein_id.rsplit("_", 1)[0]
-            cluster_index = representatives[cluster_id]
-            clusters_aa[cluster_index] += protein_size
-
         # cluster proteins
         if not workdir.joinpath("step3_cluster.tsv").exists():
             cluster_proteins(
@@ -509,6 +503,10 @@ def main(argv: typing.Optional[typing.List[str]] = None) -> int:
         compositions = make_compositions(
             progress, prot_clusters, representatives, protein_representatives, protein_sizes
         )
+
+        # compute the number of amino acids per cluster
+        clusters_aa = numpy.zeros(len(representatives), dtype=numpy.int32)
+        clusters_aa[:] = compositions.sum(axis=1).A1
 
         # compute and ponderate distances
         progress.console.print(
