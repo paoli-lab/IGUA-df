@@ -180,51 +180,26 @@ def deduplicate_sequences(
     ).check_returncode()
     # build `rep_seq.fasta` file, which is needed for second nucleotide step
     mmseqs.run(
-        "result2repseq",
-        indb_path,
+        "createsubdb",
         outdb_path,
-        repdb_path,
-        db_load_mode=0,
-        compressed=0,
-    ).check_returncode()
-    mmseqs.run(
-        "result2flat",
-        indb_path,
         indb_path,
         repdb_path,
-        repdb_path.with_suffix(".fasta"),
+        subdb_mode=1,
     )
-    # remove temporary files
-    mmseqs.run("rmdb", indb_path)
-    mmseqs.run("rmdb", outdb_path)
-    mmseqs.run("rmdb", repdb_path)
 
 
 def cluster_sequences(
     mmseqs: MMSeqs,
-    input_path: pathlib.Path,
+    input_db: pathlib.Path,
     output_prefix: pathlib.Path,
     tmpdir: pathlib.Path,
 ):
     # prepare paths for the MMSeqs2 databases
-    indb_path = input_path.with_suffix(".db")
     outdb_path = output_prefix.with_suffix(".db")
-    # create input database (zero-copy, as we formatted the input as two-line FASTA)
-    mmseqs.run(
-        "createdb",
-        input_path,
-        indb_path,
-        dbtype=2,
-        shuffle=1,
-        createdb_mode=1,
-        write_lookup=0,
-        id_offset=0,
-        compressed=0,
-    ).check_returncode()
     # run clustering
     mmseqs.run(
         "linclust",
-        indb_path,
+        input_db,
         outdb_path,
         tmpdir,
         e=0.001,
@@ -238,15 +213,12 @@ def cluster_sequences(
     # build `clusters.tsv` file, which is needed for the final tables
     mmseqs.run(
         "createtsv",
-        indb_path,
-        indb_path,
+        input_db,
+        input_db,
         outdb_path,
         output_prefix.with_name(f"{output_prefix.name}_cluster.tsv"),
     ).check_returncode()
     # remove temporary files
-    mmseqs.run("rmdb", indb_path)
-    mmseqs.run("rmdb", outdb_path)
-
 
 def extract_proteins(
     progress: rich.progress.Progress,
@@ -326,9 +298,6 @@ def cluster_proteins(
         outdb_path,
         output_prefix.with_name(f"{output_prefix.name}_cluster.tsv"),
     ).check_returncode()
-    # remove temporary files
-    mmseqs.run("rmdb", indb_path)
-    mmseqs.run("rmdb", outdb_path)
 
 
 def make_compositions(
@@ -435,7 +404,7 @@ def main(argv: typing.Optional[typing.List[str]] = None) -> int:
             )
             cluster_sequences(
                 mmseqs,
-                workdir.joinpath("step1_rep_seq.fasta"),
+                workdir.joinpath("step1_rep_seq.db"),
                 workdir.joinpath("step2"),
                 workdir.joinpath("tmp"),
             )
