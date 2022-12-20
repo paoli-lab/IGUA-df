@@ -308,7 +308,7 @@ def make_compositions(
     protein_sizes: typing.Dict[str, int],
 ) -> scipy.sparse.csr_matrix:
     compositions = scipy.sparse.dok_matrix(
-        (len(representatives), len(protein_representatives)), dtype=numpy.int16
+        (len(representatives), len(protein_representatives)), dtype=numpy.int32
     )
     task = progress.add_task(description=f"[bold blue]{'Working':>9}[/]", total=len(protein_clusters))
     for row in progress.track(protein_clusters.itertuples(), task_id=task):
@@ -324,13 +324,15 @@ def make_compositions(
 def compute_distances(
     progress: rich.progress.Progress,
     compositions: scipy.sparse.csr_matrix,
-    clusters_aa: numpy.ndarray,
     jobs: typing.Optional[int],
 ) -> numpy.ndarray:
     n = 0
     r = compositions.shape[0]
-    distance_vector = numpy.zeros(r*(r-1) // 2, dtype=numpy.double)
+    # compute the number of amino acids per cluster
+    clusters_aa = numpy.zeros(r, dtype=numpy.int32)
+    clusters_aa[:] = compositions.sum(axis=1).A1
     # compute manhattan distance on sparse matrix
+    distance_vector = numpy.zeros(r*(r-1) // 2, dtype=numpy.double)
     sparse_manhattan(
         compositions.data,
         compositions.indices,
@@ -341,9 +343,10 @@ def compute_distances(
     # ponderate by sum of amino-acid distance
     for i in range(r-1):
         l = r - (i+1)
-        distance_vector[n:n+l] /= clusters_aa[i+1:] + clusters_aa[i]
+        distance_vector[n:n+l] /= (clusters_aa[i+1:] + clusters_aa[i]).clip(min=1)
         n += l
-    return distance_vector
+    # check distances are in [0, 1]
+    return numpy.clip(distance_vector, 0.0, 1.0, out=distance_vector) 
 
 
 def main(argv: typing.Optional[typing.List[str]] = None) -> int:
@@ -476,17 +479,11 @@ def main(argv: typing.Optional[typing.List[str]] = None) -> int:
             progress, prot_clusters, representatives, protein_representatives, protein_sizes
         )
 
-        # compute the number of amino acids per cluster
-        clusters_aa = numpy.zeros(len(representatives), dtype=numpy.int32)
-        clusters_aa[:] = compositions.sum(axis=1).A1
-
         # compute and ponderate distances
         progress.console.print(
             f"[bold blue]{'Computing':>12}[/] pairwise distance based on protein composition"
         )
-        distance_vector = compute_distances(
-            progress, compositions, clusters_aa, args.jobs
-        )
+        distance_vector = compute_distances(progress, compositions, args.jobs)
 
         # run hierarchical clustering
         progress.console.print(
