@@ -393,6 +393,7 @@ def main(argv: typing.Optional[typing.List[str]] = None) -> int:
             header=None,
             names=["fragment_representative", "cluster_id"],
         )
+        gcfs1.sort_values("cluster_id", inplace=True)
         progress.console.print(
             f"[bold green]{'Reduced':>12}[/] {len(gcfs1)} clusters to {len(gcfs1.fragment_representative.unique())} complete representatives"
         )
@@ -414,6 +415,7 @@ def main(argv: typing.Optional[typing.List[str]] = None) -> int:
             header=None,
             names=["nucleotide_representative", "fragment_representative"],
         )
+        gcfs2.sort_values("fragment_representative", inplace=True)
         progress.console.print(
             f"[bold green]{'Reduced':>12}[/] {len(gcfs2)} clusters to {len(gcfs2.nucleotide_representative.unique())} nucleotide representatives"
         )
@@ -450,6 +452,7 @@ def main(argv: typing.Optional[typing.List[str]] = None) -> int:
             header=None,
             names=["protein_representative", "protein_id"],
         )
+        prot_clusters.sort_values("protein_id", inplace=True)
 
         # extract protein representatives
         prot_clusters["cluster_id"] = (
