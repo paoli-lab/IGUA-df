@@ -183,7 +183,7 @@ class MMSeqs:
             params.append(repr(v))
 
         # use fixed number of threads
-        if self.threads is not None and (command == "easy-linclust" or command == "search"):
+        if self.threads is not None and command in {"linclust", "search"}:
             params.extend(["--threads", str(self.threads)])
 
         # start mmseqs subprocess

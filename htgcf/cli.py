@@ -72,7 +72,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--jobs",
         help="the number of threads to use",
         type=int,
-        default=1,
+        default=os.cpu_count(),
         metavar="N",
     )
     parser.add_argument(
