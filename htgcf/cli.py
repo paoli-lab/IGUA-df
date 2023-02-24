@@ -13,6 +13,7 @@ import subprocess
 import typing
 import multiprocessing.pool
 
+import anndata
 import gb_io
 import rich
 import numpy
@@ -62,6 +63,18 @@ def build_parser() -> argparse.ArgumentParser:
         "--output",
         help="the name of the ouput file to generate",
         default=pathlib.Path("gcfs.tsv"),
+        type=pathlib.Path,
+    )
+    parser.add_argument(
+        "-C",
+        "--compositions",
+        help="a file where to write compositional data for GCF representatives",
+        type=pathlib.Path,
+    )
+    parser.add_argument(
+        "-D",
+        "--distances",
+        help="a file where to write distances between GCF representatives",
         type=pathlib.Path,
     )
     parser.add_argument(
@@ -306,10 +319,11 @@ def make_compositions(
     representatives: typing.Dict[str, int],
     protein_representatives: typing.Dict[str, int],
     protein_sizes: typing.Dict[str, int],
-) -> scipy.sparse.csr_matrix:
+) -> anndata.AnnData: #scipy.sparse.csr_matrix:
     compositions = scipy.sparse.dok_matrix(
         (len(representatives), len(protein_representatives)), dtype=numpy.int32
     )
+
     task = progress.add_task(description=f"[bold blue]{'Working':>9}[/]", total=len(protein_clusters))
     for row in progress.track(protein_clusters.itertuples(), task_id=task):
         cluster_index = representatives[row.cluster_id]
@@ -318,7 +332,18 @@ def make_compositions(
             row.protein_representative
         ]
     progress.remove_task(task)
-    return compositions.tocsr()
+
+    sorted_representatives = sorted(representatives, key=representatives.__getitem__)
+    sorted_protein_representatives = sorted(protein_representatives, key=protein_representatives.__getitem__)
+    return anndata.AnnData(
+        X=compositions.tocsr(),
+        dtype=numpy.int32,
+        obs=pandas.DataFrame(index=pandas.Index(sorted_representatives, name="cluster_id")),
+        var=pandas.DataFrame(
+            index=pandas.Index(sorted_protein_representatives, name="protein_id"),
+            data=dict(size=[protein_sizes[x] for x in sorted_protein_representatives]),
+        )
+    )
 
 
 def compute_distances(
@@ -483,7 +508,7 @@ def main(argv: typing.Optional[typing.List[str]] = None) -> int:
         progress.console.print(
             f"[bold blue]{'Computing':>12}[/] pairwise distance based on protein composition"
         )
-        distance_vector = compute_distances(progress, compositions, args.jobs)
+        distance_vector = compute_distances(progress, compositions.X, args.jobs)
 
         # run hierarchical clustering
         progress.console.print(
@@ -535,5 +560,24 @@ def main(argv: typing.Optional[typing.List[str]] = None) -> int:
         progress.console.print(
             f"[bold green]{'Saved':>12}[/] final GCFs table to {str(args.output)!r}"
         )
+
+        # save compositions
+        if args.compositions is not None:
+            gcf_representatives = gcfs["gcf_representative"].unique()
+            representatives_compositions = anndata.AnnData(
+                X=compositions[gcf_representatives].X,
+                dtype=compositions.X.dtype,
+                var=compositions.var,
+                obs=(
+                    gcfs.set_index("cluster_id")
+                        .loc[gcf_representatives, ["gcf_id", "gcf_representative"]]
+                        .set_index("gcf_id")
+                )
+            )
+            representatives_compositions.write(args.compositions)
+            progress.console.print(
+                f"[bold green]{'Saved':>12}[/] GCF compositions to {str(args.compositions)!r}"
+            )
+
 
     return 0
