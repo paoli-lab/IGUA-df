@@ -128,9 +128,10 @@ def extract_sequences(
     clusters_lengths = {}
     n_duplicate = 0
     with open(output, "w") as dst:
-        for input_path in inputs:
-            task = progress.add_task(f"[bold blue]{'Reading':>9}[/]")
-            with io.BufferedReader(progress.open(input_path, "rb", task_id=task)) as reader:  # type: ignore
+        task1 = progress.add_task(f"[bold blue]{'Working':>9}[/]")
+        for input_path in progress.track(inputs, task_id=task1):
+            task2 = progress.add_task(f"[bold blue]{'Reading':>9}[/]")
+            with io.BufferedReader(progress.open(input_path, "rb", task_id=task2)) as reader:  # type: ignore
                 if reader.peek().startswith(_GZIP_MAGIC):
                     reader = gzip.GzipFile(mode="rb", fileobj=reader)  # type: ignore
                 for record in gb_io.iter(reader):
@@ -139,7 +140,8 @@ def extract_sequences(
                     else:
                         write_cluster(record, dst)
                         clusters_lengths[record.name] = len(record.sequence)
-            progress.remove_task(task)
+            progress.remove_task(task2)
+        progress.remove_task(task1)
     if n_duplicate > 0:
         progress.console.print(
             f"[bold yellow]{'Skipped':>12}[/] {n_duplicate} clusters with duplicate identifiers"
