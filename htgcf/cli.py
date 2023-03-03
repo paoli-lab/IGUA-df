@@ -72,9 +72,9 @@ def build_parser() -> argparse.ArgumentParser:
         type=pathlib.Path,
     )
     parser.add_argument(
-        "-D",
-        "--distances",
-        help="a file where to write distances between GCF representatives",
+        "-F",
+        "--features",
+        help="a file where to write protein features in FASTA format",
         type=pathlib.Path,
     )
     parser.add_argument(
@@ -159,7 +159,7 @@ def deduplicate_sequences(
     input_path: pathlib.Path,
     output_prefix: pathlib.Path,
     tmpdir: pathlib.Path,
-):
+) -> None:
     # prepare paths for the MMSeqs2 databases
     indb_path = input_path.with_suffix(".db")
     outdb_path = output_prefix.with_suffix(".db")
@@ -205,7 +205,7 @@ def deduplicate_sequences(
         indb_path,
         repdb_path,
         subdb_mode=1,
-    )
+    ).check_returncode()
 
 
 def cluster_sequences(
@@ -213,7 +213,7 @@ def cluster_sequences(
     input_db: pathlib.Path,
     output_prefix: pathlib.Path,
     tmpdir: pathlib.Path,
-):
+) -> None:
     # prepare paths for the MMSeqs2 databases
     outdb_path = output_prefix.with_suffix(".db")
     # run clustering
@@ -238,7 +238,7 @@ def cluster_sequences(
         outdb_path,
         output_prefix.with_name(f"{output_prefix.name}_cluster.tsv"),
     ).check_returncode()
-    # remove temporary files
+
 
 def extract_proteins(
     progress: rich.progress.Progress,
@@ -280,7 +280,7 @@ def cluster_proteins(
     input_path: pathlib.Path,
     output_prefix: pathlib.Path,
     tmpdir: pathlib.Path,
-):
+) -> None:
     # prepare paths for the MMSeqs2 databases
     indb_path = input_path.with_suffix(".db")
     outdb_path = output_prefix.with_suffix(".db")
@@ -317,6 +317,29 @@ def cluster_proteins(
         indb_path,
         outdb_path,
         output_prefix.with_name(f"{output_prefix.name}_cluster.tsv"),
+    ).check_returncode()
+
+
+def get_protein_representative(
+    mmseqs: MMSeqs,
+    input_path: pathlib.Path,
+    output_prefix: pathlib.Path,
+    fasta_path: pathlib.Path
+) -> None:
+    indb_path = input_path.with_suffix(".db")
+    outdb_path = output_prefix.with_suffix(".db")
+    repdb_path = output_prefix.with_name(f"{output_prefix.name}_rep_seq.db")
+    mmseqs.run(
+        "createsubdb",
+        outdb_path,
+        indb_path,
+        repdb_path,
+        subdb_mode=1,
+    ).check_returncode()
+    mmseqs.run(
+        "convert2fasta",
+        repdb_path,
+        fasta_path,
     ).check_returncode()
 
 
@@ -600,6 +623,18 @@ def main(argv: typing.Optional[typing.List[str]] = None) -> int:
             representatives_compositions.write(args.compositions)
             progress.console.print(
                 f"[bold green]{'Saved':>12}[/] GCF compositions to {str(args.compositions)!r}"
+            )
+
+        # save protein features
+        if args.features is not None:
+            get_protein_representative(
+                mmseqs,
+                proteins_faa,
+                workdir.joinpath("step3"),
+                args.features,
+            )
+            progress.console.print(
+                f"[bold green]{'Saved':>12}[/] protein features to {str(args.features)!r}"
             )
 
 
