@@ -303,11 +303,9 @@ def cluster_proteins(
         outdb_path,
         tmpdir,
         e=0.001,
-        min_seq_id=0.6,
-        c=0.5,
-        cluster_mode=0,
-        cov_mode=0,
-        spaced_kmer_mode=0,
+        cov_mode=1,
+        c=0.9,
+        min_seq_id=0.5,
         remove_tmp_files=1,
     ).check_returncode()
     # build `clusters.tsv` file, which is needed for the final tables
