@@ -124,8 +124,9 @@ def extract_sequences(
     progress: rich.progress.Progress,
     inputs: typing.List[pathlib.Path],
     output: pathlib.Path,
-) -> typing.Dict[str, int]:
-    clusters_lengths = {}
+) -> pandas.DataFrame:
+    data = []
+    done = set()
     n_duplicate = 0
     with open(output, "w") as dst:
         task1 = progress.add_task(f"[bold blue]{'Working':>9}[/]")
@@ -135,18 +136,22 @@ def extract_sequences(
                 if reader.peek().startswith(_GZIP_MAGIC):
                     reader = gzip.GzipFile(mode="rb", fileobj=reader)  # type: ignore
                 for record in gb_io.iter(reader):
-                    if record.name in clusters_lengths:
+                    if record.name in done:
                         n_duplicate += 1
                     else:
                         write_cluster(record, dst)
-                        clusters_lengths[record.name] = len(record.sequence)
+                        data.append((record.name, len(record.sequence), input_path))
+                        done.add(record.name)
             progress.remove_task(task2)
         progress.remove_task(task1)
     if n_duplicate > 0:
         progress.console.print(
             f"[bold yellow]{'Skipped':>12}[/] {n_duplicate} clusters with duplicate identifiers"
         )
-    return clusters_lengths
+    return pandas.DataFrame(
+        data=data,
+        columns=["cluster_id", "cluster_length", "filename"]
+    ).set_index("cluster_id")
 
 
 def deduplicate_sequences(
@@ -373,7 +378,7 @@ def compute_distances(
         distance_vector[n:n+l] /= (clusters_aa[i+1:] + clusters_aa[i]).clip(min=1)
         n += l
     # check distances are in [0, 1]
-    return numpy.clip(distance_vector, 0.0, 1.0, out=distance_vector) 
+    return numpy.clip(distance_vector, 0.0, 1.0, out=distance_vector)
 
 
 def main(argv: typing.Optional[typing.List[str]] = None) -> int:
@@ -404,9 +409,9 @@ def main(argv: typing.Optional[typing.List[str]] = None) -> int:
         # extract raw sequences
         clusters_fna = workdir.joinpath("clusters.fna")
         progress.console.print(f"[bold blue]{'Loading':>12}[/] input clusters")
-        sequence_lengths = extract_sequences(progress, args.input, clusters_fna)
+        input_sequences = extract_sequences(progress, args.input, clusters_fna)
         progress.console.print(
-            f"[bold green]{'Loaded':>12}[/] {len(sequence_lengths)} clusters to process"
+            f"[bold green]{'Loaded':>12}[/] {len(input_sequences)} clusters to process"
         )
 
         # deduplicate fragments
@@ -527,17 +532,26 @@ def main(argv: typing.Optional[typing.List[str]] = None) -> int:
             }
         )
         progress.console.print(
-            f"[bold green]{'Built':>12}[/] {len(gcfs3.gcf_id.unique())} GCFs from {len(sequence_lengths)} initial clusters"
+            f"[bold green]{'Built':>12}[/] {len(gcfs3.gcf_id.unique())} GCFs from {len(input_sequences)} initial clusters"
         )
 
         # extract protein representative using the largest cluster of each GCF
-        gcf3_representatives = {}
-        for gcf_id, rows in gcfs3.groupby("gcf_id", sort=False):
-            gcf3_representatives[gcf_id] = max(
-                rows["nucleotide_representative"], key=sequence_lengths.__getitem__
+        gcf3_representatives = (
+            pandas.merge(
+                gcfs3,
+                input_sequences["cluster_length"],
+                left_on="nucleotide_representative",
+                right_index=True
             )
-        gcfs3["gcf_representative"] = gcfs3["gcf_id"].apply(
-            gcf3_representatives.__getitem__
+            .sort_values("cluster_length")
+            .drop_duplicates("gcf_id", keep="last")
+            .set_index("gcf_id")
+        )
+        gcfs3 = pandas.merge(
+            gcfs3,
+            gcf3_representatives["nucleotide_representative"].rename("gcf_representative"),
+            left_on="gcf_id",
+            right_index=True,
         )
 
         # build final GCF table
