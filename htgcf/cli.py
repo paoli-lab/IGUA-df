@@ -556,16 +556,22 @@ def main(argv: typing.Optional[typing.List[str]] = None) -> int:
 
         # build final GCF table
         gcfs = pandas.merge(
-            pandas.merge(gcfs1, gcfs2, on="fragment_representative"),
-            gcfs3,
-            on="nucleotide_representative",
+            pandas.merge(
+                pandas.merge(gcfs1, gcfs2, on="fragment_representative"),
+                gcfs3,
+                on="nucleotide_representative",
+            ),
+            input_sequences["cluster_length"],
+            left_on="cluster_id",
+            right_index=True,
         )
 
         # save results
-        gcfs.sort_values("gcf_id", inplace=True)
+        gcfs.sort_values(["gcf_id", "cluster_length"], inplace=True)
         gcfs = gcfs[
             [
                 "cluster_id",
+                "cluster_length",
                 "gcf_id",
                 "gcf_representative",
                 "nucleotide_representative",
