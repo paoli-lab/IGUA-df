@@ -561,7 +561,7 @@ def main(argv: typing.Optional[typing.List[str]] = None) -> int:
                 gcfs3,
                 on="nucleotide_representative",
             ),
-            input_sequences["cluster_length"],
+            input_sequences,
             left_on="cluster_id",
             right_index=True,
         )
@@ -576,6 +576,7 @@ def main(argv: typing.Optional[typing.List[str]] = None) -> int:
                 "gcf_representative",
                 "nucleotide_representative",
                 "fragment_representative",
+                "filename"
             ]
         ]
         gcfs.to_csv(args.output, sep="\t", index=False)
