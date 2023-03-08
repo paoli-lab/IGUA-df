@@ -304,7 +304,7 @@ class Clustering(_MMSeqsFile):
         self.path = path
         self.database = database
 
-    def to_dataframe(self) -> pandas.DataFrame:
+    def to_dataframe(self, columns: typing.Tuple[str, str]) -> pandas.DataFrame:
         """Obtain the clustering results as a table.
         """
         with tempfile.NamedTemporaryFile("w", suffix=".tsv") as tmp:
@@ -319,7 +319,7 @@ class Clustering(_MMSeqsFile):
                 tmp.name,
                 sep="\t",
                 header=None,
-                names=["representative", "id"],
+                names=list(columns),
             )
 
     def to_subdb(self, path: pathlib.Path) -> Database:

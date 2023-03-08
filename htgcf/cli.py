@@ -137,42 +137,6 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def deduplicate_sequences(
-    mmseqs: MMSeqs,
-    input_path: pathlib.Path,
-    output_prefix: pathlib.Path,
-    tmpdir: pathlib.Path,
-) -> None:
-    db = Database.create(mmseqs, input_path)
-    result = db.cluster(output_prefix.with_suffix(".db"), **_PARAMS_NUC1)
-    subdb = result.to_subdb(
-        output_prefix.with_name(f"{output_prefix.name}_rep_seq.db")
-    )
-    return result.to_dataframe()
-  
-
-def cluster_sequences(
-    mmseqs: MMSeqs,
-    input_db: pathlib.Path,
-    output_prefix: pathlib.Path,
-    tmpdir: pathlib.Path,
-) -> None:
-    db = Database(mmseqs, input_db)
-    result = db.cluster(output_prefix.with_suffix(".db"), **_PARAMS_NUC2)
-    return result.to_dataframe()
-
-
-def cluster_proteins(
-    mmseqs: MMSeqs,
-    input_path: pathlib.Path,
-    output_prefix: pathlib.Path,
-    tmpdir: pathlib.Path,
-) -> None:
-    db = Database.create(mmseqs, input_path, input_path.with_suffix(".db"))
-    result = db.cluster(output_prefix.with_suffix(".db"), **_PARAMS_PROT)
-    return result.to_dataframe()
-
-
 def get_protein_representative(
     mmseqs: MMSeqs,
     input_path: pathlib.Path,
@@ -254,6 +218,13 @@ def main(argv: typing.Optional[typing.List[str]] = None) -> int:
     args = parser.parse_args()
 
     with contextlib.ExitStack() as ctx:
+        # open temporary folder
+        if args.workdir is None:
+            workdir = pathlib.Path(ctx.enter_context(tempfile.TemporaryDirectory()))
+        else:
+            workdir = pathlib.Path(args.workdir)
+            workdir.mkdir(parents=True, exist_ok=True)
+
         # prepare progress bar
         progress = ctx.enter_context(
             rich.progress.Progress(
@@ -262,14 +233,7 @@ def main(argv: typing.Optional[typing.List[str]] = None) -> int:
                 *rich.progress.Progress.get_default_columns(),
             )
         )
-        mmseqs = MMSeqs(progress=progress, threads=args.jobs)
-
-        # open temporary folder
-        if args.workdir is None:
-            workdir = pathlib.Path(ctx.enter_context(tempfile.TemporaryDirectory()))
-        else:
-            workdir = pathlib.Path(args.workdir)
-            workdir.mkdir(parents=True, exist_ok=True)
+        mmseqs = MMSeqs(progress=progress, threads=args.jobs, tempdir=workdir)
 
         # extract raw sequences
         clusters_fna = workdir.joinpath("clusters.fna")
@@ -279,21 +243,13 @@ def main(argv: typing.Optional[typing.List[str]] = None) -> int:
             f"[bold green]{'Loaded':>12}[/] {len(input_sequences)} clusters to process"
         )
 
-        # deduplicate fragments
+        # create initial sequence database
         progress.console.print(
             f"[bold blue]{'Starting':>12}[/] nucleotide deduplication step with [purple]mmseqs[/]"
         )
-        gcfs1 = (
-            deduplicate_sequences(
-                mmseqs, 
-                clusters_fna, 
-                workdir.joinpath("step1"), 
-                workdir.joinpath("tmp")
-            ).rename(columns={
-                "representative": "fragment_representative",
-                "id": "cluster_id",
-            }).sort_values("cluster_id")
-        )
+        db = Database.create(mmseqs, clusters_fna)
+        step1 = db.cluster(workdir / "step1.db", **_PARAMS_NUC1)
+        gcfs1 = step1.to_dataframe(columns=["fragment_representative", "cluster_id"]).sort_values("cluster_id")
         progress.console.print(
             f"[bold green]{'Reduced':>12}[/] {len(gcfs1)} clusters to {len(gcfs1.fragment_representative.unique())} complete representatives"
         )
@@ -302,15 +258,9 @@ def main(argv: typing.Optional[typing.List[str]] = None) -> int:
         progress.console.print(
             f"[bold blue]{'Starting':>12}[/] nucleotide clustering step with [purple]mmseqs[/]"
         )
-        gcfs2 = cluster_sequences(
-            mmseqs,
-            workdir.joinpath("step1_rep_seq.db"),
-            workdir.joinpath("step2"),
-            workdir.joinpath("tmp"),
-        ).rename(columns={
-            "representative": "nucleotide_representative",
-            "id": "fragment_representative",
-        }).sort_values("fragment_representative")
+        repdb = step1.to_subdb(workdir / "step1.rep_seq.db")
+        step2 = repdb.cluster(workdir / "step2.db", **_PARAMS_NUC2)
+        gcfs2 = step2.to_dataframe(columns=["nucleotide_representative", "fragment_representative"]).sort_values("fragment_representative")
         progress.console.print(
             f"[bold green]{'Reduced':>12}[/] {len(gcfs2)} clusters to {len(gcfs2.nucleotide_representative.unique())} nucleotide representatives"
         )
@@ -337,12 +287,9 @@ def main(argv: typing.Optional[typing.List[str]] = None) -> int:
         )
 
         # cluster proteins
-        prot_clusters = cluster_proteins(
-            mmseqs, proteins_faa, workdir.joinpath("step3"), workdir.joinpath("tmp")
-        ).rename(columns={
-            "representative": "protein_representative",
-            "id": "protein_id",
-        }).sort_values("protein_id")
+        prot_db = Database.create(mmseqs, proteins_faa)
+        prot_result = prot_db.cluster(workdir / "step3.db", **_PARAMS_PROT)
+        prot_clusters = prot_result.to_dataframe(columns=["protein_representative", "protein_id"])
 
         # extract protein representatives
         prot_clusters["cluster_id"] = (
@@ -383,7 +330,7 @@ def main(argv: typing.Optional[typing.List[str]] = None) -> int:
         gcfs3 = pandas.DataFrame(
             {
                 "gcf_id": [f"{args.prefix}{i:07}" for i in flat],
-                "nucleotide_representative": sorted(representatives),
+                "nucleotide_representative": compositions.obs_names,
             }
         )
         progress.console.print(
