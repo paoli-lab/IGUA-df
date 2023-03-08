@@ -14,10 +14,16 @@ version = "0.7"
 version = "0.18"
 [dependencies.numpy]
 version = "0.18"
+features = ["half"]
 [dependencies.rayon]
 version = "1.7"
 [dependencies.kodama]
 version = "0.2"
+[dependencies.num-traits]
+version = "0.2.14"
+[dependencies.half]
+version = "2.2"
+features = ["num-traits"]
 
 [features]
 extension-module = ["pyo3/extension-module"]

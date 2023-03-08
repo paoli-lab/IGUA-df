@@ -32,7 +32,7 @@ except ImportError:
 
 from .seqio import extract_proteins, extract_sequences
 from .mmseqs import MMSeqs, Database, Clustering
-from .hca import sparse_manhattan, linkage
+from .hca import manhattan, linkage
 
 
 _PARAMS_NUC1 = dict(
@@ -192,7 +192,7 @@ def compute_distances(
         compositions.sort_indices()
     # compute manhattan distance on sparse matrix
     distance_vector = numpy.zeros(r*(r-1) // 2, dtype=numpy.double)
-    sparse_manhattan(
+    manhattan(
         compositions.data,
         compositions.indices,
         compositions.indptr,
