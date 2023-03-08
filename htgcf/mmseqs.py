@@ -1,8 +1,12 @@
+import enum
 import os
+import pathlib
 import subprocess
 import typing
 
+import pandas
 import rich.progress
+import tempfile
 
 
 COMMANDS = {
@@ -127,11 +131,20 @@ COMMANDS = {
 }
 
 class MMSeqs:
+    """A wrapper around an ``mmseqs`` binary and common parameters.
+    """
 
-    def __init__(self, binary="mmseqs", progress=None, threads=None):
+    def __init__(
+        self, 
+        binary="mmseqs", 
+        progress=None, 
+        threads=None,
+        tempdir=None,
+    ):
         self.binary = binary
         self.progress = progress
         self.threads = threads
+        self.tempdir = tempdir or tempfile.TemporaryDirectory().name
 
     def _wrap_progress(
         self,
@@ -199,3 +212,106 @@ class MMSeqs:
             process.returncode
         )
 
+
+class DatabaseType(enum.IntEnum):
+    Protein = 1
+    Nucleotides = 2
+
+
+class Database:
+
+    @classmethod
+    def create(
+        cls, 
+        mmseqs: MMSeqs, 
+        sequences: pathlib.Path, 
+        path: typing.Optional[pathlib.Path] = None,
+    ) -> "Database":
+        """Create a new database using a FASTA-formatted sequence file.
+        """
+        if path is None:
+            path = sequences.with_suffix(".db")
+        mmseqs.run(
+            "createdb",
+            sequences,
+            path,
+            # dbtype=2, # FIXME
+            shuffle=0,
+            createdb_mode=1,
+            write_lookup=0,
+            id_offset=0,
+            compressed=0,
+        ).check_returncode()
+        return cls(path)
+
+    def __init__(self, path: pathlib.Path):
+        """Open a database at the given location.
+        """
+        self.path = path
+
+    def cluster(
+        self, 
+        mmseqs: MMSeqs, 
+        output: pathlib.Path,
+        *,
+        e_value=0.001,
+        sequence_identity=0.85,
+        coverage=1,
+        cluster_mode=0,
+        coverage_mode=0,
+        spaced_kmer_mode=0,
+    ) -> "Clustering":
+        """Run linear clustering on the database.
+        """
+        # run clustering
+        mmseqs.run(
+            "linclust",
+            self.path,
+            output,
+            mmseqs.tempdir,
+            e=e_value,
+            min_seq_id=sequence_identity,
+            c=coverage,
+            cluster_mode=cluster_mode,
+            cov_mode=coverage_mode,
+            spaced_kmer_mode=spaced_kmer_mode,
+            remove_tmp_files=1,
+        ).check_returncode()
+        return Clustering(output, self)
+
+
+class Clustering:
+
+    def __init__(self, path: pathlib.Path, database: Database):
+        self.path = path
+        self.database = database
+
+    def to_dataframe(self, mmseqs: MMSeqs) -> pandas.DataFrame:
+        """Obtain the clustering results as a table.
+        """
+        with tempfile.NamedTemporaryFile("w", suffix=".tsv") as tmp:
+            mmseqs.run(
+                "createtsv",
+                self.database.path,
+                self.database.path,
+                self.path,
+                tmp.name,
+            ).check_returncode()
+            return pandas.read_csv(
+                tmp.name,
+                sep="\t",
+                header=None,
+                names=["representative", "id"],
+            )
+
+    def to_subdb(self, mmseqs: MMSeqs, path: pathlib.Path) -> Database:
+        """Generate a sub-database with the representatives of this clustering.
+        """
+        mmseqs.run(
+            "createsubdb",
+            self.path,
+            self.database.path,
+            path,
+            subdb_mode=1,
+        ).check_returncode()
+        return Database(path)
