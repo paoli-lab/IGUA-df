@@ -1,78 +1,94 @@
+#!/usr/bin/env python3
+
+import os
 import sys
 
 import setuptools
-from setuptools.command.build_ext import build_ext as _build_ext
+import setuptools_rust as rust
+from setuptools_rust.build import build_rust as _build_rust
 
 try:
-    from Cython.Build import cythonize
-except ImportError as err:
-    cythonize = err
+    from setuptools_rust.rustc_info import get_rust_version
+except ImportError:
+    from setuptools_rust.utils import get_rust_version
 
 
-class build_ext(_build_ext):
-    """A `build_ext` that disables optimizations if compiled in debug mode.
-    """
+class build_rust(_build_rust):
 
-    # --- Build code ---
-
-    def build_extension(self, ext):
-        # add debug symbols if we are building in debug mode
-        if self.debug:
-            if self.compiler.compiler_type in {"unix", "cygwin", "mingw32"}:
-                ext.extra_compile_args.append("-g")
-            elif self.compiler.compiler_type == "msvc":
-                ext.extra_compile_args.append("/Z7")
-            if sys.implementation.name == "cpython":
-                ext.define_macros.append(("CYTHON_TRACE_NOGIL", 1))
+    def run(self):
+        rustc = get_rust_version()
+        if rustc is not None:
+            nightly = rustc is not None and "nightly" in rustc.prerelease
         else:
-            ext.define_macros.append(("CYTHON_WITHOUT_ASSERTIONS", 1))
-        # build the rest of the extension as normal
-        _build_ext.build_extension(self, ext)
+            self.setup_temp_rustc_unix(toolchain="stable", profile="minimal")
+            nightly = False
 
-    def build_extensions(self):
-        # check `cythonize` is available
-        if isinstance(cythonize, ImportError):
-            raise RuntimeError("Cython is required to run `build_ext` command") from cythonize
+        if self.inplace:
+            self.extensions[0].strip = rust.Strip.No
+        if nightly:
+            self.extensions[0].features = (*self.extensions[0].features, "nightly")
 
-        # use debug directives with Cython if building in debug mode
-        cython_args = {
-            "include_path": ["include"],
-            "compiler_directives": {
-                "cdivision": True,
-                "nonecheck": False,
-            },
-        }
-        if self.force:
-            cython_args["force"] = True
-        if self.debug:
-            cython_args["annotate"] = True
-            cython_args["compiler_directives"]["cdivision_warnings"] = True
-            cython_args["compiler_directives"]["warn.undeclared"] = True
-            cython_args["compiler_directives"]["warn.unreachable"] = True
-            cython_args["compiler_directives"]["warn.maybe_uninitialized"] = True
-            cython_args["compiler_directives"]["warn.unused"] = True
-            cython_args["compiler_directives"]["warn.unused_arg"] = True
-            cython_args["compiler_directives"]["warn.unused_result"] = True
-            cython_args["compiler_directives"]["warn.multiple_declarators"] = True
-        else:
-            cython_args["compiler_directives"]["boundscheck"] = False
-            cython_args["compiler_directives"]["wraparound"] = False
+        _build_rust.run(self)
 
-        # cythonize the extensions and then build as normal
-        self.extensions = cythonize(self.extensions, **cython_args)
-        for extension in self.extensions:
-            extension._needs_stub = False
-        _build_ext.build_extensions(self)
+    def setup_temp_rustc_unix(self, toolchain, profile):
+        rustup_sh = os.path.join(self.build_temp, "rustup.sh")
+        os.environ["CARGO_HOME"] = os.path.join(self.build_temp, "cargo")
+        os.environ["RUSTUP_HOME"] = os.path.join(self.build_temp, "rustup")
+
+        self.mkpath(os.environ["CARGO_HOME"])
+        self.mkpath(os.environ["RUSTUP_HOME"])
+
+        self.announce("downloading rustup.sh install script", level=INFO)
+        with urllib.request.urlopen("https://sh.rustup.rs") as res:
+            with open(rustup_sh, "wb") as dst:
+                shutil.copyfileobj(res, dst)
+
+        self.announce("installing Rust compiler to {}".format(self.build_temp), level=INFO)
+        proc = subprocess.run([
+            "sh",
+            rustup_sh,
+            "-y",
+            "--default-toolchain",
+            toolchain,
+            "--profile",
+            profile,
+            "--no-modify-path"
+        ])
+        proc.check_returncode()
+
+        self.announce("updating $PATH variable to use local Rust compiler", level=INFO)
+        os.environ["PATH"] = ":".join([
+            os.path.abspath(os.path.join(os.environ["CARGO_HOME"], "bin")),
+            os.environ["PATH"]
+        ])
+
+    def get_dylib_ext_path(self, ext, module_name):
+        ext_path = _build_rust.get_dylib_ext_path(self, ext, module_name)
+        if self.inplace:
+            base = os.path.basename(ext_path)
+            folder = os.path.dirname(os.path.realpath(__file__))
+            prefix = os.path.sep.join(ext.name.split(".")[:-1])
+            ext_path = os.path.join(folder, prefix, base)
+        return ext_path
 
 
 setuptools.setup(
-    ext_modules=[
-        setuptools.Extension(
-            "htgcf._manhattan",
-            sources=["htgcf/_manhattan.pyx"],
-        ),
-    ],
-    cmdclass={
-        "build_ext": build_ext,
-    }
+    # ext_modules=[
+    #     setuptools.Extension(
+    #         "htgcf._manhattan",
+    #         sources=["htgcf/_manhattan.pyx"],
+    #     ),
+    # ],
+    # cmdclass={
+    #     "build_ext": build_ext,
+    # },
+    cmdclass=dict(build_rust=build_rust),
+    setup_requires=["setuptools", "setuptools_rust"],
+    rust_extensions=[rust.RustExtension(
+        "htgcf.hca",
+        path=os.path.join("htgcf", "hca", "Cargo.toml"),
+        binding=rust.Binding.PyO3,
+        strip=rust.Strip.Debug,
+        features=["extension-module"],
+    )],
 )

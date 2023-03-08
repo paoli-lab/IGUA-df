@@ -38,7 +38,7 @@ except ImportError:
 
 from .seqio import extract_proteins, extract_sequences
 from .mmseqs import MMSeqs, Database, Clustering
-from ._manhattan import sparse_manhattan
+from .hca import sparse_manhattan
 
 
 _PARAMS_NUC1 = dict(

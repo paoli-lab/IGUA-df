@@ -1,0 +1,21 @@
+[package]
+name = "htgcf-hca"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+path = "lib.rs"
+
+[dependencies.gb-io]
+version = "0.7"
+[dependencies.pyo3]
+version = "0.18"
+[dependencies.numpy]
+version = "0.18"
+[dependencies.rayon]
+version = "1.7"
+
+[features]
+extension-module = ["pyo3/extension-module"]
