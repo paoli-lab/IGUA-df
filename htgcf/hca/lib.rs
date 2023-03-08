@@ -31,29 +31,44 @@ fn sparse_manhattan<'py>(
     let data_s = data_r.as_slice()?;
     
     let mut dist_r = distances.try_readwrite()?;
-    let mut dist_s = dist_r.as_slice_mut()?.as_mut_ptr() as usize;
+    let dist_s = dist_r.as_slice_mut()?;
     let n = (distances.shape()[0] as f32 * 2.0).sqrt().ceil() as usize; 
+
+    // cut the result array into several slices so that rayon can safely
+    // write the output in parallel (otherwise, a single mutable slice 
+    // cannot be shared across multiple threads)
+    let subslices = {
+        let mut subslice;
+        let mut subslices = Vec::new();
+        let mut rest = dist_s;
+        for i in 0..n-1 {
+            let length = n - i - 1;
+            (subslice, rest) = rest.split_at_mut(length);
+            subslices.push(subslice);
+        }
+        subslices
+    };
 
 
     let pool = rayon::ThreadPoolBuilder::new()
-      .num_threads(threads)
-      .build()
+        .num_threads(threads)
+        .build()
         .expect("failed to create thread pool");
    
    
-        
     py.allow_threads(|| {
         pool.install(|| {
-            (0..n-1).into_par_iter()
-                .map(|px| {
+            subslices.into_par_iter()
+                .enumerate()
+                .map(|(px, d_out)| {
                     let i_next = indptr_s[px + 1] as usize;
                     for py in px+1..n {
                         let j_next = indptr_s[py + 1] as usize;
 
                         let mut i = indptr_s[px] as usize;
                         let mut j = indptr_s[py] as usize;
-
                         let mut d = 0;
+
                         while i < i_next && j < j_next {
                             match indices_s[i].cmp(&indices_s[j]) {
                                 Ordering::Equal => {
@@ -84,11 +99,7 @@ fn sparse_manhattan<'py>(
                             }
                         }
 
-                        let k = n*px - px*(px+1)/2 + py - 1 - px;
-                        unsafe {
-                            let dist_ptr = dist_s as *mut f64;
-                            *dist_ptr.add(k) = d as f64;
-                        }
+                        d_out[py - px - 1] = d as f64;
                     }
                 })
                 .collect::<()>();
