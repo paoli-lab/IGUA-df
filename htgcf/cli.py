@@ -3,7 +3,6 @@ import collections
 import contextlib
 import csv
 import functools
-import gzip
 import itertools
 import io
 import os
@@ -37,11 +36,9 @@ try:
 except ImportError:
     from argparse import HelpFormatter
 
+from .seqio import extract_proteins, extract_sequences
 from .mmseqs import MMSeqs, Database, Clustering
 from ._manhattan import sparse_manhattan
-
-
-_GZIP_MAGIC = b'\x1f\x8b'
 
 
 _PARAMS_NUC1 = dict(
@@ -140,46 +137,6 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def write_cluster(record: gb_io.Record, file: typing.TextIO) -> None:
-    file.write(">{}\n".format(record.name))
-    file.write(record.sequence.decode("ascii"))
-    file.write("\n")
-
-
-def extract_sequences(
-    progress: rich.progress.Progress,
-    inputs: typing.List[pathlib.Path],
-    output: pathlib.Path,
-) -> pandas.DataFrame:
-    data = []
-    done = set()
-    n_duplicate = 0
-    with open(output, "w") as dst:
-        task1 = progress.add_task(f"[bold blue]{'Working':>9}[/]")
-        for input_path in progress.track(inputs, task_id=task1):
-            task2 = progress.add_task(f"[bold blue]{'Reading':>9}[/]")
-            with io.BufferedReader(progress.open(input_path, "rb", task_id=task2)) as reader:  # type: ignore
-                if reader.peek().startswith(_GZIP_MAGIC):
-                    reader = gzip.GzipFile(mode="rb", fileobj=reader)  # type: ignore
-                for record in gb_io.iter(reader):
-                    if record.name in done:
-                        n_duplicate += 1
-                    else:
-                        write_cluster(record, dst)
-                        data.append((record.name, len(record.sequence), input_path))
-                        done.add(record.name)
-            progress.remove_task(task2)
-        progress.remove_task(task1)
-    if n_duplicate > 0:
-        progress.console.print(
-            f"[bold yellow]{'Skipped':>12}[/] {n_duplicate} clusters with duplicate identifiers"
-        )
-    return pandas.DataFrame(
-        data=data,
-        columns=["cluster_id", "cluster_length", "filename"]
-    ).set_index("cluster_id")
-
-
 def deduplicate_sequences(
     mmseqs: MMSeqs,
     input_path: pathlib.Path,
@@ -187,16 +144,11 @@ def deduplicate_sequences(
     tmpdir: pathlib.Path,
 ) -> None:
     db = Database.create(mmseqs, input_path)
-    result = db.cluster(
-        mmseqs, 
-        output_prefix.with_suffix(".db"),
-        **_PARAMS_NUC1,
-    )
+    result = db.cluster(output_prefix.with_suffix(".db"), **_PARAMS_NUC1)
     subdb = result.to_subdb(
-        mmseqs, 
         output_prefix.with_name(f"{output_prefix.name}_rep_seq.db")
     )
-    return result.to_dataframe(mmseqs)
+    return result.to_dataframe()
   
 
 def cluster_sequences(
@@ -205,48 +157,9 @@ def cluster_sequences(
     output_prefix: pathlib.Path,
     tmpdir: pathlib.Path,
 ) -> None:
-    db = Database(input_db)
-    result = db.cluster(
-        mmseqs, 
-        output_prefix.with_suffix(".db"),
-        **_PARAMS_NUC2,
-    )
-    return result.to_dataframe(mmseqs)
-
-
-def extract_proteins(
-    progress: rich.progress.Progress,
-    inputs: typing.List[pathlib.Path],
-    output: pathlib.Path,
-    representatives: typing.Container[str],
-) -> typing.Dict[str, int]:
-    protein_sizes = {}
-    with output.open("w") as dst:
-        for input_path in inputs:
-            task = progress.add_task(f"[bold blue]{'Reading':>9}[/]")
-            with io.BufferedReader(progress.open(input_path, "rb", task_id=task)) as reader:  # type: ignore
-                if reader.peek()[:2] == b'\x1f\x8b':
-                    reader = gzip.GzipFile(mode="rb", fileobj=reader)  # type: ignore
-                for record in gb_io.iter(reader):
-                    if record.name in representatives:
-                        for i, feat in enumerate(
-                            filter(lambda f: f.type == "CDS", record.features)
-                        ):
-                            qualifiers = feat.qualifiers.to_dict()
-                            translation = qualifiers["translation"][0].rstrip("*")
-                            protein_id = "{}_{}".format(record.name, i)
-                            if protein_id not in protein_sizes:
-                                dst.write(">")
-                                dst.write(protein_id)
-                                dst.write("\n")
-                                dst.write(translation)
-                                dst.write("\n")
-                                protein_sizes[protein_id] = len(translation)
-            progress.remove_task(task)
-    progress.console.print(
-        f"[bold green]{'Extracted':>12}[/] {len(protein_sizes)} proteins from {len(representatives)} nucleotide representative"
-    )
-    return protein_sizes
+    db = Database(mmseqs, input_db)
+    result = db.cluster(output_prefix.with_suffix(".db"), **_PARAMS_NUC2)
+    return result.to_dataframe()
 
 
 def cluster_proteins(
@@ -256,48 +169,8 @@ def cluster_proteins(
     tmpdir: pathlib.Path,
 ) -> None:
     db = Database.create(mmseqs, input_path, input_path.with_suffix(".db"))
-    result = db.cluster(
-        mmseqs, 
-        output_prefix.with_suffix(".db"),
-        **_PARAMS_PROT,
-    )
-    return result.to_dataframe(mmseqs)
-
-
-    # indb_path = input_path.with_suffix(".db")
-    # outdb_path = 
-    # # create input database (zero-copy, as we formatted the input as two-line FASTA)
-    # mmseqs.run(
-    #     "createdb",
-    #     input_path,
-    #     indb_path,
-    #     dbtype=1,
-    #     shuffle=0,
-    #     createdb_mode=1,
-    #     write_lookup=0,
-    #     id_offset=0,
-    #     compressed=0,
-    # ).check_returncode()
-    # # run clustering
-    # mmseqs.run(
-    #     "linclust",
-    #     indb_path,
-    #     outdb_path,
-    #     tmpdir,
-    #     e=0.001,
-    #     cov_mode=1,
-    #     c=0.9,
-    #     min_seq_id=0.5,
-    #     remove_tmp_files=1,
-    # ).check_returncode()
-    # # build `clusters.tsv` file, which is needed for the final tables
-    # mmseqs.run(
-    #     "createtsv",
-    #     indb_path,
-    #     indb_path,
-    #     outdb_path,
-    #     output_prefix.with_name(f"{output_prefix.name}_cluster.tsv"),
-    # ).check_returncode()
+    result = db.cluster(output_prefix.with_suffix(".db"), **_PARAMS_PROT)
+    return result.to_dataframe()
 
 
 def get_protein_representative(
@@ -306,10 +179,10 @@ def get_protein_representative(
     output_prefix: pathlib.Path,
     fasta_path: pathlib.Path
 ) -> None:
-    db = Database(input_path.with_suffix(".db"))
-    result = Clustering(output_prefix.with_suffix(".db"), db)
-    subdb = result.to_subdb(mmseqs, output_prefix.with_name(f"{output_prefix.name}_rep_seq.db"))
-    subdb.to_fasta(mmseqs, path)
+    db = Database(mmseqs, input_path.with_suffix(".db"))
+    result = Clustering(mmseqs, output_prefix.with_suffix(".db"), db)
+    subdb = result.to_subdb(output_prefix.with_name(f"{output_prefix.name}_rep_seq.db"))
+    subdb.to_fasta(fasta_path)
 
 
 def make_compositions(
