@@ -192,6 +192,10 @@ def compute_distances(
     # compute the number of amino acids per cluster
     clusters_aa = numpy.zeros(r, dtype=numpy.int32)
     clusters_aa[:] = compositions.sum(axis=1).A1
+    # make sure the sparse matrix has sorted indices (necessary for 
+    # the distance algorithm to work efficiently)
+    if not compositions.has_sorted_indices:
+        compositions.sort_indices()
     # compute manhattan distance on sparse matrix
     distance_vector = numpy.zeros(r*(r-1) // 2, dtype=numpy.double)
     sparse_manhattan(

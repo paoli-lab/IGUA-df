@@ -241,7 +241,6 @@ class Database(_MMSeqsFile):
             "createdb",
             sequences,
             path,
-            # dbtype=2, # FIXME
             shuffle=0,
             createdb_mode=1,
             write_lookup=0,
