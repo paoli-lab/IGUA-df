@@ -16,6 +16,8 @@ version = "0.18"
 version = "0.18"
 [dependencies.rayon]
 version = "1.7"
+[dependencies.kodama]
+version = "0.2"
 
 [features]
 extension-module = ["pyo3/extension-module"]

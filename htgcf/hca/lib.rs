@@ -1,3 +1,4 @@
+extern crate kodama;
 extern crate pyo3;
 extern crate numpy;
 extern crate rayon;
@@ -6,14 +7,15 @@ use std::cmp::Ord;
 use std::cmp::Ordering;
 
 use pyo3::prelude::*;
+use pyo3::exceptions::PyValueError;
 use rayon::prelude::*;
 use numpy::PyArray;
-
+use kodama::Method;
 
 /// Compute pairwise Manhattan distances for a CSR sparse matrix.
 #[pyfunction]
 #[pyo3(signature = (data, indices, indptr, distances, threads=0))]
-fn sparse_manhattan<'py>(
+pub fn sparse_manhattan<'py>(
     py: Python<'py>,
     data: &PyArray<i32, numpy::Ix1>,
     indices: &PyArray<i32, numpy::Ix1>,
@@ -30,9 +32,9 @@ fn sparse_manhattan<'py>(
     let indices_s = indices_r.as_slice()?;
     let data_s = data_r.as_slice()?;
     
+    let n = (distances.shape()[0] as f32 * 2.0).sqrt().ceil() as usize; 
     let mut dist_r = distances.try_readwrite()?;
     let dist_s = dist_r.as_slice_mut()?;
-    let n = (distances.shape()[0] as f32 * 2.0).sqrt().ceil() as usize; 
 
     // cut the result array into several slices so that rayon can safely
     // write the output in parallel (otherwise, a single mutable slice 
@@ -42,8 +44,7 @@ fn sparse_manhattan<'py>(
         let mut subslices = Vec::new();
         let mut rest = dist_s;
         for i in 0..n-1 {
-            let length = n - i - 1;
-            (subslice, rest) = rest.split_at_mut(length);
+            (subslice, rest) = rest.split_at_mut(n - i - 1);
             subslices.push(subslice);
         }
         subslices
@@ -110,6 +111,42 @@ fn sparse_manhattan<'py>(
 }
 
 
+#[pyfunction]
+#[pyo3(signature = (distances, method="single"))]
+pub fn linkage<'py>(
+    py: Python<'py>,
+    distances: &PyArray<f64, numpy::Ix1>,
+    method: &str,
+) -> PyResult<&'py PyArray<f64, numpy::Ix2>> {
+    let method_variant = match method {
+        "single" => Method::Single,
+        "complete" => Method::Complete,
+        "average" => Method::Average,
+        "weighted" => Method::Weighted,
+        "ward" => Method::Ward,
+        "centroid" => Method::Centroid,
+        "median" => Method::Median,
+        other => return Err(PyValueError::new_err(format!("Invalid method: {}", other))),
+    };
+
+    let n = (distances.shape()[0] as f32 * 2.0).sqrt().ceil() as usize;
+    let mut distances_r = distances.try_readwrite()?;
+    let distances_s = distances_r.as_slice_mut()?;
+
+    let dendrogram = kodama::linkage(distances_s, n, method_variant);
+
+    unsafe {
+        let z = PyArray::new( py, [n-1, 4], false );
+        let z_view = z.try_readwrite()?;
+        for (i, step) in dendrogram.steps().iter().enumerate() {
+            *z_view.uget_mut([i, 0]) = step.cluster1 as f64;
+            *z_view.uget_mut([i, 1]) = step.cluster2 as f64;
+            *z_view.uget_mut([i, 2]) = step.dissimilarity as f64;
+            *z_view.uget_mut([i, 3]) = step.size as f64;
+        }
+        Ok(z)
+    }
+}
 
 
 /// A Python module for metagenomic sequence comparison with ``skani``.
@@ -119,5 +156,6 @@ fn sparse_manhattan<'py>(
 pub fn init(_py: Python, m: &PyModule) -> PyResult<()> {
     m.add("__package__", "htgcf")?;
     m.add_function(wrap_pyfunction!(sparse_manhattan, m)?)?;
+    m.add_function(wrap_pyfunction!(linkage, m)?)?;
     Ok(())
 }

@@ -21,12 +21,6 @@ import scipy.sparse
 from scipy.cluster.hierarchy import fcluster
 
 try:
-    from fastcluster import linkage as _linkage
-    linkage = functools.partial(_linkage, preserve_input=False)
-except ImportError:
-    from scipy.cluster.hierarchy import linkage
-
-try:
     import argcomplete
 except ImportError as err:
     argcomplete = err
@@ -38,7 +32,7 @@ except ImportError:
 
 from .seqio import extract_proteins, extract_sequences
 from .mmseqs import MMSeqs, Database, Clustering
-from .hca import sparse_manhattan
+from .hca import sparse_manhattan, linkage
 
 
 _PARAMS_NUC1 = dict(
