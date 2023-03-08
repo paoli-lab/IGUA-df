@@ -249,6 +249,12 @@ class Database:
         """
         self.path = path
 
+    def to_fasta(self, mmseqs: MMSeqs, path: pathlib.Path) -> pathlib.Path:
+        """Convert the sequence database to a two-line FASTA file.
+        """
+        mmseqs.run("convert2fasta", self.path, path).check_returncode()
+        return path
+
     def cluster(
         self, 
         mmseqs: MMSeqs, 

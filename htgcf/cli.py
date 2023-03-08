@@ -37,11 +37,37 @@ try:
 except ImportError:
     from argparse import HelpFormatter
 
-from .mmseqs import MMSeqs
+from .mmseqs import MMSeqs, Database, Clustering
 from ._manhattan import sparse_manhattan
 
 
 _GZIP_MAGIC = b'\x1f\x8b'
+
+
+_PARAMS_NUC1 = dict(
+    e_value=0.001,
+    sequence_identity=0.85,
+    coverage=1,
+    cluster_mode=0,
+    coverage_mode=1,
+    spaced_kmer_mode=0,
+)
+
+_PARAMS_NUC2 = dict(
+    e_value=0.001,
+    sequence_identity=0.6,
+    coverage=0.5,
+    cluster_mode=0,
+    coverage_mode=0,
+    spaced_kmer_mode=0,
+)
+
+_PARAMS_PROT = dict(
+    e_value=0.001,
+    coverage=0.9,
+    coverage_mode=1,
+    sequence_identity=0.5,
+)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -160,53 +186,18 @@ def deduplicate_sequences(
     output_prefix: pathlib.Path,
     tmpdir: pathlib.Path,
 ) -> None:
-    # prepare paths for the MMSeqs2 databases
-    indb_path = input_path.with_suffix(".db")
-    outdb_path = output_prefix.with_suffix(".db")
-    repdb_path = output_prefix.with_name(f"{output_prefix.name}_rep_seq.db")
-    # create input database (zero-copy, as we formatted the input as two-line FASTA)
-    mmseqs.run(
-        "createdb",
-        input_path,
-        indb_path,
-        dbtype=2,
-        shuffle=0,
-        createdb_mode=1,
-        write_lookup=0,
-        id_offset=0,
-        compressed=0,
-    ).check_returncode()
-    # run clustering
-    mmseqs.run(
-        "linclust",
-        indb_path,
-        outdb_path,
-        tmpdir,
-        e=0.001,
-        min_seq_id=0.85,
-        c=1,
-        cluster_mode=0,
-        cov_mode=1,
-        spaced_kmer_mode=0,
-        remove_tmp_files=1,
-    ).check_returncode()
-    # build `clusters.tsv` file, which is needed for the final tables
-    mmseqs.run(
-        "createtsv",
-        indb_path,
-        indb_path,
-        outdb_path,
-        output_prefix.with_name(f"{output_prefix.name}_cluster.tsv"),
-    ).check_returncode()
-    # build `rep_seq.fasta` file, which is needed for second nucleotide step
-    mmseqs.run(
-        "createsubdb",
-        outdb_path,
-        indb_path,
-        repdb_path,
-        subdb_mode=1,
-    ).check_returncode()
-
+    db = Database.create(mmseqs, input_path)
+    result = db.cluster(
+        mmseqs, 
+        output_prefix.with_suffix(".db"),
+        **_PARAMS_NUC1,
+    )
+    subdb = result.to_subdb(
+        mmseqs, 
+        output_prefix.with_name(f"{output_prefix.name}_rep_seq.db")
+    )
+    return result.to_dataframe(mmseqs)
+  
 
 def cluster_sequences(
     mmseqs: MMSeqs,
@@ -214,30 +205,13 @@ def cluster_sequences(
     output_prefix: pathlib.Path,
     tmpdir: pathlib.Path,
 ) -> None:
-    # prepare paths for the MMSeqs2 databases
-    outdb_path = output_prefix.with_suffix(".db")
-    # run clustering
-    mmseqs.run(
-        "linclust",
-        input_db,
-        outdb_path,
-        tmpdir,
-        e=0.001,
-        min_seq_id=0.6,
-        c=0.5,
-        cluster_mode=0,
-        cov_mode=0,
-        spaced_kmer_mode=0,
-        remove_tmp_files=1,
-    ).check_returncode()
-    # build `clusters.tsv` file, which is needed for the final tables
-    mmseqs.run(
-        "createtsv",
-        input_db,
-        input_db,
-        outdb_path,
-        output_prefix.with_name(f"{output_prefix.name}_cluster.tsv"),
-    ).check_returncode()
+    db = Database(input_db)
+    result = db.cluster(
+        mmseqs, 
+        output_prefix.with_suffix(".db"),
+        **_PARAMS_NUC2,
+    )
+    return result.to_dataframe(mmseqs)
 
 
 def extract_proteins(
@@ -281,41 +255,49 @@ def cluster_proteins(
     output_prefix: pathlib.Path,
     tmpdir: pathlib.Path,
 ) -> None:
-    # prepare paths for the MMSeqs2 databases
-    indb_path = input_path.with_suffix(".db")
-    outdb_path = output_prefix.with_suffix(".db")
-    # create input database (zero-copy, as we formatted the input as two-line FASTA)
-    mmseqs.run(
-        "createdb",
-        input_path,
-        indb_path,
-        dbtype=1,
-        shuffle=0,
-        createdb_mode=1,
-        write_lookup=0,
-        id_offset=0,
-        compressed=0,
-    ).check_returncode()
-    # run clustering
-    mmseqs.run(
-        "linclust",
-        indb_path,
-        outdb_path,
-        tmpdir,
-        e=0.001,
-        cov_mode=1,
-        c=0.9,
-        min_seq_id=0.5,
-        remove_tmp_files=1,
-    ).check_returncode()
-    # build `clusters.tsv` file, which is needed for the final tables
-    mmseqs.run(
-        "createtsv",
-        indb_path,
-        indb_path,
-        outdb_path,
-        output_prefix.with_name(f"{output_prefix.name}_cluster.tsv"),
-    ).check_returncode()
+    db = Database.create(mmseqs, input_path, input_path.with_suffix(".db"))
+    result = db.cluster(
+        mmseqs, 
+        output_prefix.with_suffix(".db"),
+        **_PARAMS_PROT,
+    )
+    return result.to_dataframe(mmseqs)
+
+
+    # indb_path = input_path.with_suffix(".db")
+    # outdb_path = 
+    # # create input database (zero-copy, as we formatted the input as two-line FASTA)
+    # mmseqs.run(
+    #     "createdb",
+    #     input_path,
+    #     indb_path,
+    #     dbtype=1,
+    #     shuffle=0,
+    #     createdb_mode=1,
+    #     write_lookup=0,
+    #     id_offset=0,
+    #     compressed=0,
+    # ).check_returncode()
+    # # run clustering
+    # mmseqs.run(
+    #     "linclust",
+    #     indb_path,
+    #     outdb_path,
+    #     tmpdir,
+    #     e=0.001,
+    #     cov_mode=1,
+    #     c=0.9,
+    #     min_seq_id=0.5,
+    #     remove_tmp_files=1,
+    # ).check_returncode()
+    # # build `clusters.tsv` file, which is needed for the final tables
+    # mmseqs.run(
+    #     "createtsv",
+    #     indb_path,
+    #     indb_path,
+    #     outdb_path,
+    #     output_prefix.with_name(f"{output_prefix.name}_cluster.tsv"),
+    # ).check_returncode()
 
 
 def get_protein_representative(
@@ -324,21 +306,10 @@ def get_protein_representative(
     output_prefix: pathlib.Path,
     fasta_path: pathlib.Path
 ) -> None:
-    indb_path = input_path.with_suffix(".db")
-    outdb_path = output_prefix.with_suffix(".db")
-    repdb_path = output_prefix.with_name(f"{output_prefix.name}_rep_seq.db")
-    mmseqs.run(
-        "createsubdb",
-        outdb_path,
-        indb_path,
-        repdb_path,
-        subdb_mode=1,
-    ).check_returncode()
-    mmseqs.run(
-        "convert2fasta",
-        repdb_path,
-        fasta_path,
-    ).check_returncode()
+    db = Database(input_path.with_suffix(".db"))
+    result = Clustering(output_prefix.with_suffix(".db"), db)
+    subdb = result.to_subdb(mmseqs, output_prefix.with_name(f"{output_prefix.name}_rep_seq.db"))
+    subdb.to_fasta(mmseqs, path)
 
 
 def make_compositions(
@@ -436,42 +407,37 @@ def main(argv: typing.Optional[typing.List[str]] = None) -> int:
         )
 
         # deduplicate fragments
-        if not workdir.joinpath("step1_cluster.tsv").exists():
-            progress.console.print(
-                f"[bold blue]{'Starting':>12}[/] nucleotide deduplication step with [purple]mmseqs[/]"
-            )
-            deduplicate_sequences(
-                mmseqs, clusters_fna, workdir.joinpath("step1"), workdir.joinpath("tmp")
-            )
-        gcfs1 = pandas.read_csv(
-            workdir.joinpath("step1_cluster.tsv"),
-            sep="\t",
-            header=None,
-            names=["fragment_representative", "cluster_id"],
+        progress.console.print(
+            f"[bold blue]{'Starting':>12}[/] nucleotide deduplication step with [purple]mmseqs[/]"
         )
-        gcfs1.sort_values("cluster_id", inplace=True)
+        gcfs1 = (
+            deduplicate_sequences(
+                mmseqs, 
+                clusters_fna, 
+                workdir.joinpath("step1"), 
+                workdir.joinpath("tmp")
+            ).rename(columns={
+                "representative": "fragment_representative",
+                "id": "cluster_id",
+            }).sort_values("cluster_id")
+        )
         progress.console.print(
             f"[bold green]{'Reduced':>12}[/] {len(gcfs1)} clusters to {len(gcfs1.fragment_representative.unique())} complete representatives"
         )
 
         # cluster sequences
-        if not workdir.joinpath("step2_cluster.tsv").exists():
-            progress.console.print(
-                f"[bold blue]{'Starting':>12}[/] nucleotide clustering step with [purple]mmseqs[/]"
-            )
-            cluster_sequences(
-                mmseqs,
-                workdir.joinpath("step1_rep_seq.db"),
-                workdir.joinpath("step2"),
-                workdir.joinpath("tmp"),
-            )
-        gcfs2 = pandas.read_csv(
-            workdir.joinpath("step2_cluster.tsv"),
-            sep="\t",
-            header=None,
-            names=["nucleotide_representative", "fragment_representative"],
+        progress.console.print(
+            f"[bold blue]{'Starting':>12}[/] nucleotide clustering step with [purple]mmseqs[/]"
         )
-        gcfs2.sort_values("fragment_representative", inplace=True)
+        gcfs2 = cluster_sequences(
+            mmseqs,
+            workdir.joinpath("step1_rep_seq.db"),
+            workdir.joinpath("step2"),
+            workdir.joinpath("tmp"),
+        ).rename(columns={
+            "representative": "nucleotide_representative",
+            "id": "fragment_representative",
+        }).sort_values("fragment_representative")
         progress.console.print(
             f"[bold green]{'Reduced':>12}[/] {len(gcfs2)} clusters to {len(gcfs2.nucleotide_representative.unique())} nucleotide representatives"
         )
@@ -498,17 +464,12 @@ def main(argv: typing.Optional[typing.List[str]] = None) -> int:
         )
 
         # cluster proteins
-        if not workdir.joinpath("step3_cluster.tsv").exists():
-            cluster_proteins(
-                mmseqs, proteins_faa, workdir.joinpath("step3"), workdir.joinpath("tmp")
-            )
-        prot_clusters = pandas.read_csv(
-            workdir.joinpath("step3_cluster.tsv"),
-            sep="\t",
-            header=None,
-            names=["protein_representative", "protein_id"],
-        )
-        prot_clusters.sort_values("protein_id", inplace=True)
+        prot_clusters = cluster_proteins(
+            mmseqs, proteins_faa, workdir.joinpath("step3"), workdir.joinpath("tmp")
+        ).rename(columns={
+            "representative": "protein_representative",
+            "id": "protein_id",
+        }).sort_values("protein_id")
 
         # extract protein representatives
         prot_clusters["cluster_id"] = (
