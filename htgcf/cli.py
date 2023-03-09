@@ -131,7 +131,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--precision",
         help="the numerical precision to use for computing distances for hierarchical clustering",
-        default="single",
+        default="double",
         choices={
             "half",
             "single",
