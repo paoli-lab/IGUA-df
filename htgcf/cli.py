@@ -111,7 +111,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--clustering-method",
         help="the hierarchical method to use for protein-level clustering",
-        default="average",
+        default="complete",
         choices={
             "average",
             "single",
@@ -127,6 +127,16 @@ def build_parser() -> argparse.ArgumentParser:
         help="the distance threshold after which to stop merging clusters",
         type=float,
         default=0.5,
+    )
+    parser.add_argument(
+        "--precision",
+        help="the numerical precision to use for computing distances for hierarchical clustering",
+        default="single",
+        choices={
+            "half",
+            "single",
+            "double"
+        }
     )
     return parser
 
@@ -180,6 +190,7 @@ def compute_distances(
     progress: rich.progress.Progress,
     compositions: scipy.sparse.csr_matrix,
     jobs: typing.Optional[int],
+    precision: str,
 ) -> numpy.ndarray:
     n = 0
     r = compositions.shape[0]
@@ -191,7 +202,7 @@ def compute_distances(
     if not compositions.has_sorted_indices:
         compositions.sort_indices()
     # compute manhattan distance on sparse matrix
-    distance_vector = numpy.zeros(r*(r-1) // 2, dtype=numpy.double)
+    distance_vector = numpy.zeros(r*(r-1) // 2, dtype=precision)
     manhattan(
         compositions.data,
         compositions.indices,
@@ -315,11 +326,11 @@ def main(argv: typing.Optional[typing.List[str]] = None) -> int:
         progress.console.print(
             f"[bold blue]{'Computing':>12}[/] pairwise distance based on protein composition"
         )
-        distance_vector = compute_distances(progress, compositions.X, args.jobs)
+        distance_vector = compute_distances(progress, compositions.X, args.jobs, args.precision)
 
         # run hierarchical clustering
         progress.console.print(
-            f"[bold blue]{'Clustering':>12}[/] gene clusters using average linkage"
+            f"[bold blue]{'Clustering':>12}[/] gene clusters using {args.clustering_method} linkage"
         )
         Z = linkage(distance_vector, method=args.clustering_method)
         flat = fcluster(Z, criterion="distance", t=args.clustering_distance)
