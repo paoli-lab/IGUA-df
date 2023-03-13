@@ -129,5 +129,5 @@ pub fn manhattan<'py>(
         return manhattan_impl(py, indptr_s, indices_s, data_s, view.as_slice_mut()?, threads);
     }
 
-    Ok(())
+    Err(PyTypeError::new_err("Unsupported dtype in `manhattan`"))
 }

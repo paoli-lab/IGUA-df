@@ -73,5 +73,5 @@ pub fn linkage<'py>(
         return linkage_impl(py, d, variant);
     }
 
-    return Err(PyTypeError::new_err("Unsupported array in `linkage`"))
+    Err(PyTypeError::new_err("Unsupported dtype in `linkage`"))
 }
