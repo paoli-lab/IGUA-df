@@ -2,6 +2,7 @@ use std::cmp::Ord;
 use std::cmp::Ordering;
 
 use pyo3::prelude::*;
+use pyo3::exceptions::PyTypeError;
 use rayon::prelude::*;
 use half::f16;
 use numpy::Element;

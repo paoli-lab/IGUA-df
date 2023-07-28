@@ -27,3 +27,4 @@ features = ["num-traits"]
 
 [features]
 extension-module = ["pyo3/extension-module"]
+nightly = []
