@@ -1,0 +1,11 @@
+include setup.*
+include COPYING
+include CHANGELOG.md
+include README.md
+include pyproject.toml
+
+recursive-include htgcf *.rs Cargo.toml
+recursive-include tests *
+
+include .cargo/config.toml
+recursive-include crates *
