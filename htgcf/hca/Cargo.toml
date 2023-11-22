@@ -6,7 +6,7 @@ publish = false
 
 [lib]
 crate-type = ["cdylib", "rlib"]
-name = "htgcf.gca"
+name = "hca"
 path = "lib.rs"
 
 [dependencies.gb-io]
