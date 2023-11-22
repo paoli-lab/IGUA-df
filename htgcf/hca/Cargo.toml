@@ -6,6 +6,7 @@ publish = false
 
 [lib]
 crate-type = ["cdylib", "rlib"]
+name = "htgcf.gca"
 path = "lib.rs"
 
 [dependencies.gb-io]
@@ -27,4 +28,5 @@ features = ["num-traits"]
 
 [features]
 extension-module = ["pyo3/extension-module"]
+cpython = []
 nightly = []
