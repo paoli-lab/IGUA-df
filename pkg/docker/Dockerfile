@@ -18,7 +18,8 @@ RUN wget 'https://github.com/soedinglab/MMseqs2/releases/download/15-6f452/mmseq
 	&& wget 'https://github.com/soedinglab/MMseqs2/raw/master/util/mmseqs_wrapper.sh' -O /bin/mmseqs \
 	&& chmod 777 /bin/mmseqs
 
+VOLUME "/workdir"
 VOLUME "/io"
 WORKDIR "/io"
-ENTRYPOINT ["htgcf"]
+ENTRYPOINT ["htgcf", "-w", "/workdir"]
 CMD ["--help"]
