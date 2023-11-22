@@ -2,7 +2,7 @@ FROM alpine:latest as build
 ADD . /usr/src/htgcf
 RUN apk add --no-cache rust cargo python3 py3-build py3-pip
 RUN python3 -m build /usr/src/htgcf --outdir /tmp
-RUN python3 -m pip wheel gb-io --wheel-dir /tmp
+RUN python3 -m pip wheel gb-io -v --wheel-dir /tmp
 
 FROM alpine:latest as run
 COPY --from=0 /tmp/*.whl /tmp
