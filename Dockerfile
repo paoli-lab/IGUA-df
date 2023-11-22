@@ -18,4 +18,4 @@ RUN wget 'https://github.com/soedinglab/MMseqs2/releases/download/15-6f452/mmseq
 	&& wget 'https://github.com/soedinglab/MMseqs2/raw/master/util/mmseqs_wrapper.sh' -O /bin/mmseqs \
 	&& chmod 777 /bin/mmseqs
 
-ENTRYPOINT htgcf
+ENTRYPOINT ["python3", "-m", "htgcf"]
