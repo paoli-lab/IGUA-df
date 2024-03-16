@@ -310,7 +310,7 @@ def main(argv: typing.Optional[typing.List[str]] = None) -> int:
 
         # extract protein representatives
         prot_clusters["cluster_id"] = (
-            prot_clusters["protein_id"].str.rsplit("_", 1).str[0]
+            prot_clusters["protein_id"].str.rsplit("_", n=1).str[0]
         )
         protein_representatives = {
             x: i
