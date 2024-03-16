@@ -30,6 +30,7 @@ try:
 except ImportError:
     from argparse import HelpFormatter
 
+from . import __version__
 from .seqio import extract_proteins, extract_sequences
 from .mmseqs import MMSeqs, Database, Clustering
 from .hca import manhattan, linkage
@@ -65,6 +66,13 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="htgcf",
         formatter_class=HelpFormatter
+    )
+    parser.add_argument(
+        "-V",
+        "--version",
+        help="Display the program version and exit.",
+        action="version",
+        version=f"htgcf v{__version__}",
     )
     parser.add_argument(
         "-i",
