@@ -66,10 +66,10 @@ def extract_proteins(
                 for record in gb_io.iter(reader):
                     if record.name in representatives:
                         for i, feat in enumerate(
-                            filter(lambda f: f.type == "CDS", record.features)
+                            filter(lambda f: f.kind == "CDS", record.features)
                         ):
-                            qualifiers = feat.qualifiers.to_dict()
-                            translation = qualifiers["translation"][0].rstrip("*")
+                            qualifier = next(qualifier for qualifier in feat.qualifiers if qualifier.key == "translation")
+                            translation = qualifier.value.rstrip("*")
                             protein_id = "{}_{}".format(record.name, i)
                             if protein_id not in protein_sizes:
                                 write_fasta(dst, protein_id, translation)
