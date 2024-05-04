@@ -12,7 +12,7 @@ mod distance;
 ///
 #[pymodule]
 #[pyo3(name = "hca")]
-pub fn init(_py: Python, m: &PyModule) -> PyResult<()> {
+pub fn init<'py>(_py: Python<'py>, m: &Bound<'py, PyModule>) -> PyResult<()> {
     m.add("__package__", "htgcf")?;
     m.add_function(wrap_pyfunction!(distance::manhattan, m)?)?;
     m.add_function(wrap_pyfunction!(clustering::linkage, m)?)?;

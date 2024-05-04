@@ -50,7 +50,7 @@ where
 #[pyo3(signature = (distances, method="single"))]
 pub fn linkage<'py>(
     py: Python<'py>,
-    distances: &'py PyAny,
+    distances: &Bound<'py, PyAny>,
     method: &str,
 ) -> PyResult<Bound<'py, PyArray<f64, numpy::Ix2>>> {
     let variant = match method {
@@ -64,13 +64,14 @@ pub fn linkage<'py>(
         other => return Err(PyValueError::new_err(format!("Invalid method: {}", other))),
     };
 
-    if let Ok(d) = <&PyArray::<f64, numpy::Ix1>>::extract(distances) {
+    let d = distances.as_gil_ref();
+    if let Ok(d) = <&PyArray::<f64, numpy::Ix1>>::extract(d) {
         return linkage_impl(py, d, variant);
     }
-    if let Ok(d) = <&PyArray::<f32, numpy::Ix1>>::extract(distances) {
+    if let Ok(d) = <&PyArray::<f32, numpy::Ix1>>::extract(d) {
         return linkage_impl(py, d, variant);
     }
-    if let Ok(d) = <&PyArray::<f16, numpy::Ix1>>::extract(distances) {
+    if let Ok(d) = <&PyArray::<f16, numpy::Ix1>>::extract(d) {
         return linkage_impl(py, d, variant);
     }
 

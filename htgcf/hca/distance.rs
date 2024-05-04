@@ -7,9 +7,9 @@ use rayon::prelude::*;
 use half::f16;
 use numpy::Element;
 use numpy::PyArray;
+use numpy::PyArrayMethods;
 use num_traits::Float;
 use num_traits::FromPrimitive;
-
 
 fn manhattan_impl<'py, T>(
     py: Python<'py>,
@@ -102,10 +102,10 @@ where
 #[pyo3(signature = (data, indices, indptr, distances, threads=0))]
 pub fn manhattan<'py>(
     py: Python<'py>,
-    data: &PyArray<i32, numpy::Ix1>,
-    indices: &PyArray<i32, numpy::Ix1>,
-    indptr: &PyArray<i32, numpy::Ix1>,
-    distances: &PyAny,
+    data: &Bound<'py, PyArray<i32, numpy::Ix1>>,
+    indices: &Bound<'py, PyArray<i32, numpy::Ix1>>,
+    indptr: &Bound<'py, PyArray<i32, numpy::Ix1>>,
+    distances: &Bound<'py, PyAny>,
     threads: usize,
 ) -> PyResult<()> {
 
@@ -117,15 +117,16 @@ pub fn manhattan<'py>(
     let indices_s = indices_r.as_slice()?;
     let data_s = data_r.as_slice()?;
     
-    if let Ok(d) = <&PyArray::<f64, numpy::Ix1>>::extract(distances) {
+    let d = distances.as_gil_ref();
+    if let Ok(d) = <&PyArray::<f64, numpy::Ix1>>::extract(d) {
         let mut view = d.try_readwrite()?;
         return manhattan_impl(py, indptr_s, indices_s, data_s, view.as_slice_mut()?, threads);
     }
-    if let Ok(d) = <&PyArray::<f32, numpy::Ix1>>::extract(distances) {
+    if let Ok(d) = <&PyArray::<f32, numpy::Ix1>>::extract(d) {
         let mut view = d.try_readwrite()?;
         return manhattan_impl(py, indptr_s, indices_s, data_s, view.as_slice_mut()?, threads);
     }
-    if let Ok(d) = <&PyArray::<f16, numpy::Ix1>>::extract(distances) {
+    if let Ok(d) = <&PyArray::<f16, numpy::Ix1>>::extract(d) {
         let mut view = d.try_readwrite()?;
         return manhattan_impl(py, indptr_s, indices_s, data_s, view.as_slice_mut()?, threads);
     }
