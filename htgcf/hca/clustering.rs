@@ -3,6 +3,7 @@ use pyo3::exceptions::PyValueError;
 use pyo3::exceptions::PyTypeError;
 use numpy::PyArray;
 use numpy::Element;
+use numpy::PyArrayMethods;
 use kodama::Method;
 use num_traits::Float;
 use num_traits::ToPrimitive;
@@ -12,13 +13,13 @@ use half::f16;
 fn extract_dendrogram<'py, T>(
     py: Python<'py>, 
     dendrogram: kodama::Dendrogram<T>
-) -> PyResult<&'py PyArray<f64, numpy::Ix2>> 
+) -> PyResult<Bound<'py, PyArray<f64, numpy::Ix2>>>
 where
     T: Float,
 {
     let steps = dendrogram.steps();
     unsafe {
-        let z = PyArray::new(py, [steps.len(), 4], false);
+        let z = PyArray::new_bound(py, [steps.len(), 4], false);
         let z_view = z.try_readwrite()?;
         for (i, step) in dendrogram.steps().iter().enumerate() {
             *z_view.uget_mut([i, 0]) = step.cluster1.to_f64().unwrap();
@@ -34,7 +35,7 @@ fn linkage_impl<'py, T>(
     py: Python<'py>,
     distances: &PyArray<T, numpy::Ix1>,
     method: kodama::Method,
-) -> PyResult<&'py PyArray<f64, numpy::Ix2>> 
+) -> PyResult<Bound<'py, PyArray<f64, numpy::Ix2>>>
 where
     T: Element + Float,
 {
@@ -51,7 +52,7 @@ pub fn linkage<'py>(
     py: Python<'py>,
     distances: &'py PyAny,
     method: &str,
-) -> PyResult<&'py PyArray<f64, numpy::Ix2>> {
+) -> PyResult<Bound<'py, PyArray<f64, numpy::Ix2>>> {
     let variant = match method {
         "single" => Method::Single,
         "complete" => Method::Complete,
