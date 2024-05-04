@@ -8,8 +8,6 @@ use pyo3::prelude::*;
 mod clustering;
 mod distance;
 
-/// A Python module for metagenomic sequence comparison with ``skani``.
-///
 #[pymodule]
 #[pyo3(name = "hca")]
 pub fn init<'py>(_py: Python<'py>, m: &Bound<'py, PyModule>) -> PyResult<()> {
