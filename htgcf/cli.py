@@ -330,26 +330,35 @@ def main(argv: typing.Optional[typing.List[str]] = None) -> int:
             progress, prot_clusters, representatives, protein_representatives, protein_sizes
         )
 
-        # compute and ponderate distances
-        progress.console.print(
-            f"[bold blue]{'Computing':>12}[/] pairwise distance based on protein composition"
-        )
-        distance_vector = compute_distances(progress, compositions.X, args.jobs, args.precision)
+        if compositions.n_obs > 1:
+            # compute and ponderate distances
+            progress.console.print(
+                f"[bold blue]{'Computing':>12}[/] pairwise distance based on protein composition"
+            )
+            distance_vector = compute_distances(progress, compositions.X, args.jobs, args.precision)
 
-        # run hierarchical clustering
-        progress.console.print(
-            f"[bold blue]{'Clustering':>12}[/] gene clusters using {args.clustering_method} linkage"
-        )
-        Z = linkage(distance_vector, method=args.clustering_method)
-        flat = fcluster(Z, criterion="distance", t=args.clustering_distance)
+            # run hierarchical clustering
+            progress.console.print(
+                f"[bold blue]{'Clustering':>12}[/] gene clusters using {args.clustering_method} linkage"
+            )
+            Z = linkage(distance_vector, method=args.clustering_method)
+            flat = fcluster(Z, criterion="distance", t=args.clustering_distance)
 
-        # build GCFs based on flat clustering
-        gcfs3 = pandas.DataFrame(
-            {
-                "gcf_id": [f"{args.prefix}{i:07}" for i in flat],
-                "nucleotide_representative": compositions.obs_names,
-            }
-        )
+            # build GCFs based on flat clustering
+            gcfs3 = pandas.DataFrame(
+                {
+                    "gcf_id": [f"{args.prefix}{i:07}" for i in flat],
+                    "nucleotide_representative": compositions.obs_names,
+                }
+            )
+        else:
+            gcfs3 = pandas.DataFrame(
+                {
+                    "gcf_id": [f"{args.prefix}{1:07}"],
+                    "nucleotide_representative": compositions.obs_names,
+                }
+            )
+
         progress.console.print(
             f"[bold green]{'Built':>12}[/] {len(gcfs3.gcf_id.unique())} GCFs from {len(input_sequences)} initial clusters"
         )
