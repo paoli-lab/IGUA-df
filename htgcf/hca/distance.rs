@@ -31,8 +31,8 @@ where
         let mut subslice;
         let mut subslices = Vec::new();
         let mut rest = output;
-        for i in 0..n-1 {
-            (subslice, rest) = rest.split_at_mut(n - i - 1);
+        for i in 1..n {
+            (subslice, rest) = rest.split_at_mut(n - i);
             subslices.push(subslice);
         }
         subslices
@@ -59,7 +59,7 @@ where
                         while i < i_next && j < j_next {
                             match indices[i].cmp(&indices[j]) {
                                 Ordering::Equal => {
-                                    d += (data[i] - data[j]).abs() as u64;
+                                    d += data[i].abs_diff(data[j]) as u64;
                                     i += 1;
                                     j += 1;
                                 }
