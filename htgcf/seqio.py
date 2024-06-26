@@ -2,7 +2,9 @@ import io
 import typing
 import pathlib
 import gzip
+import warnings
 
+import Bio.Seq
 import gb_io
 import pandas
 import rich.progress
@@ -50,6 +52,9 @@ def extract_sequences(
     ).set_index("cluster_id")
 
 
+def translate_orf(sequence: typing.Union[str, bytes], translation_table: int = 11) -> str:
+    return str(Bio.Seq.Seq(sequence).translate(translation_table))
+
 def extract_proteins(
     progress: rich.progress.Progress,
     inputs: typing.List[pathlib.Path],
@@ -68,8 +73,12 @@ def extract_proteins(
                         for i, feat in enumerate(
                             filter(lambda f: f.kind == "CDS", record.features)
                         ):
-                            qualifier = next(qualifier for qualifier in feat.qualifiers if qualifier.key == "translation")
-                            translation = qualifier.value.rstrip("*")
+                            qualifier = next((qualifier for qualifier in feat.qualifiers if qualifier.key == "translation"), None)
+                            if qualifier is None:
+                                rich.print(f"[bold yellow]{'Warning':>12}[/] no 'translation' qualifier found in CDS feature of {record.name!r}")
+                                translation = translate_orf(record.sequence[feat.location.start:feat.location.end])
+                            else:
+                                translation = qualifier.value.rstrip("*")
                             protein_id = "{}_{}".format(record.name, i)
                             if protein_id not in protein_sizes:
                                 write_fasta(dst, protein_id, translation)
