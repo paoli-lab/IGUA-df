@@ -222,7 +222,6 @@ def make_compositions(
     sorted_protein_representatives = sorted(protein_representatives, key=protein_representatives.__getitem__)
     return anndata.AnnData(
         X=compositions.tocsr(),
-        dtype=numpy.int32,
         obs=pandas.DataFrame(index=pandas.Index(sorted_representatives, name="cluster_id")),
         var=pandas.DataFrame(
             index=pandas.Index(sorted_protein_representatives, name="protein_id"),
@@ -454,7 +453,6 @@ def main(argv: typing.Optional[typing.List[str]] = None) -> int:
             gcf_representatives = gcfs["gcf_representative"].unique()
             representatives_compositions = anndata.AnnData(
                 X=compositions[gcf_representatives].X,
-                dtype=compositions.X.dtype,
                 var=compositions.var,
                 obs=(
                     gcfs.set_index("cluster_id")
