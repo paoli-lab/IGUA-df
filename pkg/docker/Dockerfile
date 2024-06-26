@@ -5,9 +5,9 @@ RUN python3 -m pip wheel gb-io -v --wheel-dir /tmp --no-deps
 RUN python3 -m pip wheel /usr/src/htgcf --wheel-dir /tmp --no-deps
 
 FROM alpine:3.19.1 as run
-COPY --from=0 /tmp/*.whl /tmp
-RUN apk add --no-cache python3 py3-pip py3-wheel py3-numpy py3-scipy py3-h5py py3-pandas
-RUN python3 -m pip install htgcf --only-binary :all: --find-links /tmp
+COPY --from=0 /tmp/*.whl /tmp/
+RUN apk add --no-cache python3 py3-pip py3-wheel py3-numpy py3-scipy py3-h5py py3-pandas py3-biopython
+RUN python3 -m pip install htgcf --only-binary :all: --find-links /tmp --break-system-packages
 
 RUN wget 'https://github.com/soedinglab/MMseqs2/releases/download/15-6f452/mmseqs-linux-avx2.tar.gz' -O- | tar xz -C /usr/local/ --strip-components 1 \
 	&& mv /usr/local/bin/mmseqs /usr/local/bin/mmseqs_avx2 \
