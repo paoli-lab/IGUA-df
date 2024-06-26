@@ -154,6 +154,12 @@ def build_parser() -> argparse.ArgumentParser:
         'Parameters to control the hierarchical clustering.'
     )
     group_clustering.add_argument(
+        "--no-clustering",
+        help="Disable the protein-level clustering.",
+        action="store_false",
+        dest="clustering",
+    )
+    group_clustering.add_argument(
         "--clustering-method",
         help="The hierarchical method to use for protein-level clustering.",
         default="complete",
@@ -327,46 +333,46 @@ def main(argv: typing.Optional[typing.List[str]] = None) -> int:
             for i, x in enumerate(sorted(gcfs2["nucleotide_representative"].unique()))
         }
         progress.console.print(
-            f"[bold green]{'Loaded':>12}[/] {len(representatives)} nucleotide representative clusters"
+            f"[bold green]{'Found':>12}[/] {len(representatives)} nucleotide representative clusters"
         )
 
-        # extract proteins and record sizes
-        proteins_faa = workdir.joinpath("proteins.faa")
-        progress.console.print(
-            f"[bold blue]{'Extracting':>12}[/] protein sequences from clusters"
-        )
-        protein_sizes = extract_proteins(
-            progress, args.input, proteins_faa, representatives
-        )
-
-        # cluster proteins
-        prot_db = Database.create(mmseqs, proteins_faa)
-        prot_result = prot_db.cluster(workdir / "step3.db", **_PARAMS_PROT)
-        prot_clusters = prot_result.to_dataframe(columns=["protein_representative", "protein_id"])
-
-        # extract protein representatives
-        prot_clusters["cluster_id"] = (
-            prot_clusters["protein_id"].str.rsplit("_", n=1).str[0]
-        )
-        protein_representatives = {
-            x: i
-            for i, x in enumerate(
-                sorted(prot_clusters["protein_representative"].unique())
+        if args.clustering and len(representatives) > 1:
+            # extract proteins and record sizes
+            proteins_faa = workdir.joinpath("proteins.faa")
+            progress.console.print(
+                f"[bold blue]{'Extracting':>12}[/] protein sequences from clusters"
             )
-        }
-        progress.console.print(
-            f"[bold green]{'Found':>12}[/] {len(protein_representatives)} protein representatives for {len(prot_clusters)} proteins"
-        )
+            protein_sizes = extract_proteins(
+                progress, args.input, proteins_faa, representatives
+            )
 
-        # build weighted compositional array
-        progress.console.print(
-            f"[bold blue]{'Building':>12}[/] weighted compositional array"
-        )
-        compositions = make_compositions(
-            progress, prot_clusters, representatives, protein_representatives, protein_sizes
-        )
+            # cluster proteins
+            prot_db = Database.create(mmseqs, proteins_faa)
+            prot_result = prot_db.cluster(workdir / "step3.db", **_PARAMS_PROT)
+            prot_clusters = prot_result.to_dataframe(columns=["protein_representative", "protein_id"])
 
-        if compositions.n_obs > 1:
+            # extract protein representatives
+            prot_clusters["cluster_id"] = (
+                prot_clusters["protein_id"].str.rsplit("_", n=1).str[0]
+            )
+            protein_representatives = {
+                x: i
+                for i, x in enumerate(
+                    sorted(prot_clusters["protein_representative"].unique())
+                )
+            }
+            progress.console.print(
+                f"[bold green]{'Found':>12}[/] {len(protein_representatives)} protein representatives for {len(prot_clusters)} proteins"
+            )
+
+            # build weighted compositional array
+            progress.console.print(
+                f"[bold blue]{'Building':>12}[/] weighted compositional array"
+            )
+            compositions = make_compositions(
+                progress, prot_clusters, representatives, protein_representatives, protein_sizes
+            )
+
             # compute and ponderate distances
             progress.console.print(
                 f"[bold blue]{'Computing':>12}[/] pairwise distance based on protein composition"
@@ -388,10 +394,11 @@ def main(argv: typing.Optional[typing.List[str]] = None) -> int:
                 }
             )
         else:
+            sorted_representatives = sorted(representatives, key=representatives.__getitem__)
             gcfs3 = pandas.DataFrame(
                 {
-                    "gcf_id": [f"{args.prefix}{1:07}"],
-                    "nucleotide_representative": compositions.obs_names,
+                    "gcf_id": [f"{args.prefix}{i+1:07}" for i in range(len(sorted_representatives))],
+                    "nucleotide_representative": sorted_representatives,
                 }
             )
 
