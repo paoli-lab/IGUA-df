@@ -1,4 +1,96 @@
 [build-system]
-requires = ['setuptools', 'setuptools_rust']
-build-backend = "setuptools.build_meta"
+requires = ["maturin ~=1.2"]
+build-backend = "maturin"
 
+[project]
+name = "htgcf"
+version = "0.1.0"
+description = "High-Throughput Gene Cluster Family clustering for genomic and metagenomic data."
+readme = 'README.md'
+requires-python = ">=3.7"
+license = { file = "COPYING" }
+authors = [
+  { name = "Martin Larralde", email = "martin.larralde@embl.de" },
+]
+keywords = ["bioinformatics", "clusters", "gene"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: GNU General Public License v3 or later (GPLv3+)",
+    "Operating System :: OS Independent",
+    "Programming Language :: Rust",
+    "Programming Language :: Python :: 3.7",
+    "Programming Language :: Python :: 3.8",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: Implementation :: CPython",
+    "Programming Language :: Python :: Implementation :: PyPy",
+    "Topic :: Scientific/Engineering :: Bio-Informatics",
+    "Topic :: Scientific/Engineering :: Medical Science Apps.",
+    "Typing :: Typed"
+]
+dependencies = [
+    "scipy ~=1.9",
+    "gb-io ~=0.3.0",
+    "rich >=12.6,<14.0",
+    "numpy >=1.23,<3.0",
+    "pandas >=1.4,<3.0",
+    "anndata ~=0.10",
+    "biopython ~=1.79",
+]
+
+[project.urls]
+"Homepage" = "https://github.com/althonos/htgcf/"
+"Bug Tracker" = "https://github.com/althonos/htgcf/issues"
+# "Changelog" = "https://github.com/althonos/htgcf/blob/master/CHANGELOG.md"
+# "Coverage" = "https://codecov.io/gh/althonos/htgcf/"
+# "Builds" = "https://github.com/althonos/htgcf/actions/"
+# "PyPI" = "https://pypi.org/project/htgcf"
+
+[project.scripts]
+htgcf = "htgcf.cli:main"
+
+[tool.maturin]
+manifest-path = "htgcf/hca/Cargo.toml"
+features = ["extension-module"]
+python-source = "."
+module-name = "htgcf.hca"
+
+[tool.cibuildwheel]
+skip = ["*-musllinux_i686"]
+before-build = "pip install maturin"
+test-command = "python -m unittest diced.tests -v"
+build-verbosity = 1
+free-threaded-support = false
+
+[tool.cibuildwheel.linux]
+environment = { PATH="$PATH:$HOME/.cargo/bin" }
+before-all = "curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh /dev/stdin -y"
+
+[tool.coverage.report]
+show_missing = true
+exclude_lines = [
+    "pragma: no cover",
+    "if typing.TYPE_CHECKING:",
+    "@abc.abstractmethod",
+    "@abc.abstractproperty",
+    "raise NotImplementedError",
+    "return NotImplemented",
+    "raise UnexpectedError",
+    "raise AllocationError",
+]
+
+[tool.mypy]
+disallow_any_decorated = true
+disallow_any_generics = true
+disallow_any_unimported = false
+disallow_subclassing_any = false
+disallow_untyped_calls = true
+disallow_untyped_defs = true
+ignore_missing_imports = true
+warn_unused_ignores = true
+warn_return_any = true
