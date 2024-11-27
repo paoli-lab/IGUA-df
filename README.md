@@ -1,4 +1,4 @@
-# IGUA [![Stars](https://img.shields.io/github/stars/althonos/IGUA.svg?style=social&maxAge=3600&label=Star)](https://github.com/althonos/IGUA/stargazers)
+# 🦎 IGUA [![Stars](https://img.shields.io/github/stars/althonos/IGUA.svg?style=social&maxAge=3600&label=Star)](https://github.com/althonos/IGUA/stargazers)
 
 *Iterative Gene clUster Analysis, a high-throughput method for gene cluster family identification.*
 
