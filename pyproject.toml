@@ -3,9 +3,9 @@ requires = ["maturin ~=1.2"]
 build-backend = "maturin"
 
 [project]
-name = "htgcf"
+name = "igua"
 version = "0.1.0"
-description = "High-Throughput Gene Cluster Family clustering for genomic and metagenomic data."
+description = "Iterative Gene clUster Analysis, a high-throughput method for gene cluster family identification."
 readme = 'README.md'
 requires-python = ">=3.7"
 license = { file = "COPYING" }
@@ -44,21 +44,21 @@ dependencies = [
 ]
 
 [project.urls]
-"Homepage" = "https://github.com/althonos/htgcf/"
-"Bug Tracker" = "https://github.com/althonos/htgcf/issues"
-# "Changelog" = "https://github.com/althonos/htgcf/blob/master/CHANGELOG.md"
-# "Coverage" = "https://codecov.io/gh/althonos/htgcf/"
-# "Builds" = "https://github.com/althonos/htgcf/actions/"
-# "PyPI" = "https://pypi.org/project/htgcf"
+"Homepage" = "https://github.com/althonos/IGUA/"
+"Bug Tracker" = "https://github.com/althonos/IGUA/issues"
+# "Changelog" = "https://github.com/althonos/IGUA/blob/master/CHANGELOG.md"
+# "Coverage" = "https://codecov.io/gh/althonos/IGUA/"
+# "Builds" = "https://github.com/althonos/IGUA/actions/"
+# "PyPI" = "https://pypi.org/project/IGUA"
 
 [project.scripts]
-htgcf = "htgcf.cli:main"
+igua = "igua.cli:main"
 
 [tool.maturin]
-manifest-path = "htgcf/hca/Cargo.toml"
+manifest-path = "igua/hca/Cargo.toml"
 features = ["extension-module"]
 python-source = "."
-module-name = "htgcf.hca"
+module-name = "igua.hca"
 
 [tool.cibuildwheel]
 skip = ["*-musllinux_i686"]

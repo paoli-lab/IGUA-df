@@ -1,13 +1,13 @@
 FROM alpine:3.19.1 as build
-ADD . /usr/src/htgcf
+ADD . /usr/src/igua
 RUN apk add --no-cache rust cargo python3 py3-pip
 RUN python3 -m pip wheel gb-io -v --wheel-dir /tmp --no-deps
-RUN python3 -m pip wheel /usr/src/htgcf --wheel-dir /tmp --no-deps
+RUN python3 -m pip wheel /usr/src/igua --wheel-dir /tmp --no-deps
 
 FROM alpine:3.19.1 as run
 COPY --from=0 /tmp/*.whl /tmp/
 RUN apk add --no-cache python3 py3-pip py3-wheel py3-numpy py3-scipy py3-h5py py3-pandas py3-biopython
-RUN python3 -m pip install htgcf --only-binary :all: --find-links /tmp --break-system-packages
+RUN python3 -m pip install igua --only-binary :all: --find-links /tmp --break-system-packages
 
 RUN wget 'https://github.com/soedinglab/MMseqs2/releases/download/15-6f452/mmseqs-linux-avx2.tar.gz' -O- | tar xz -C /usr/local/ --strip-components 1 \
 	&& mv /usr/local/bin/mmseqs /usr/local/bin/mmseqs_avx2 \
@@ -21,5 +21,5 @@ RUN wget 'https://github.com/soedinglab/MMseqs2/releases/download/15-6f452/mmseq
 VOLUME "/workdir"
 VOLUME "/io"
 WORKDIR "/io"
-ENTRYPOINT ["htgcf", "-w", "/workdir"]
+ENTRYPOINT ["igua", "-w", "/workdir"]
 CMD ["--help"]
