@@ -64,7 +64,7 @@ _PARAMS_PROT = dict(
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        prog="htgcf",
+        prog="igua",
         formatter_class=HelpFormatter,
         add_help=False,
         description=(
@@ -84,7 +84,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--version",
         help="Display the program version and exit.",
         action="version",
-        version=f"htgcf v{__version__}",
+        version=f"igua v{__version__}",
     )
     parser.add_argument(
         "-j",
