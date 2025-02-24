@@ -4,6 +4,7 @@ use pyo3::exceptions::PyTypeError;
 use numpy::PyArray;
 use numpy::Element;
 use numpy::PyArrayMethods;
+use numpy::PyUntypedArrayMethods;
 use kodama::Method;
 use num_traits::Float;
 use num_traits::ToPrimitive;
@@ -19,7 +20,7 @@ where
 {
     let steps = dendrogram.steps();
     unsafe {
-        let z = PyArray::new_bound(py, [steps.len(), 4], false);
+        let z = PyArray::new(py, [steps.len(), 4], false);
         let z_view = z.try_readwrite()?;
         for (i, step) in dendrogram.steps().iter().enumerate() {
             *z_view.uget_mut([i, 0]) = step.cluster1.to_f64().unwrap();
@@ -33,7 +34,7 @@ where
 
 fn linkage_impl<'py, T>(
     py: Python<'py>,
-    distances: &PyArray<T, numpy::Ix1>,
+    distances: &Bound<'py, PyArray<T, numpy::Ix1>>,
     method: kodama::Method,
 ) -> PyResult<Bound<'py, PyArray<f64, numpy::Ix2>>>
 where
@@ -64,15 +65,15 @@ pub fn linkage<'py>(
         other => return Err(PyValueError::new_err(format!("Invalid method: {}", other))),
     };
 
-    let d = distances.as_gil_ref();
-    if let Ok(d) = <&PyArray::<f64, numpy::Ix1>>::extract(d) {
-        return linkage_impl(py, d, variant);
+    let d = distances.as_ref();
+    if let Ok(d) = <Bound<'py, PyArray::<f64, numpy::Ix1>>>::extract_bound(d) {
+        return linkage_impl(py, &d, variant);
     }
-    if let Ok(d) = <&PyArray::<f32, numpy::Ix1>>::extract(d) {
-        return linkage_impl(py, d, variant);
+    if let Ok(d) = <Bound<'py, PyArray::<f32, numpy::Ix1>>>::extract_bound(d) {
+        return linkage_impl(py, &d, variant);
     }
-    if let Ok(d) = <&PyArray::<f16, numpy::Ix1>>::extract(d) {
-        return linkage_impl(py, d, variant);
+    if let Ok(d) = <Bound<'py, PyArray::<f16, numpy::Ix1>>>::extract_bound(d) {
+        return linkage_impl(py, &d, variant);
     }
 
     Err(PyTypeError::new_err("Unsupported dtype in `linkage`"))

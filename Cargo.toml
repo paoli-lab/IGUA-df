@@ -7,14 +7,14 @@ publish = false
 [lib]
 crate-type = ["cdylib", "rlib"]
 name = "hca"
-path = "src/igua/hca/lib.rs"
+path = "igua/hca/lib.rs"
 
 [dependencies.gb-io]
 version = "0.7"
 [dependencies.pyo3]
-version = "0.21"
+version = "0.23"
 [dependencies.numpy]
-version = "0.21"
+version = "0.23"
 features = ["half"]
 [dependencies.rayon]
 version = "1.7"
