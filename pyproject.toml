@@ -55,7 +55,7 @@ dependencies = [
 igua = "igua.cli:main"
 
 [tool.maturin]
-manifest-path = "igua/hca/Cargo.toml"
+manifest-path = "Cargo.toml"
 features = ["extension-module"]
 python-source = "."
 module-name = "igua.hca"

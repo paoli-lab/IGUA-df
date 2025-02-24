@@ -7,7 +7,7 @@ publish = false
 [lib]
 crate-type = ["cdylib", "rlib"]
 name = "hca"
-path = "lib.rs"
+path = "src/igua/hca/lib.rs"
 
 [dependencies.gb-io]
 version = "0.7"
