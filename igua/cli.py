@@ -162,7 +162,7 @@ def build_parser() -> argparse.ArgumentParser:
     group_clustering.add_argument(
         "--clustering-method",
         help="The hierarchical method to use for protein-level clustering.",
-        default="complete",
+        default="average",
         choices={
             "average",
             "single",
@@ -177,7 +177,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--clustering-distance",
         help="The distance threshold after which to stop merging clusters.",
         type=float,
-        default=0.5,
+        default=0.8,
     )
     group_clustering.add_argument(
         "--precision",
