@@ -9,8 +9,6 @@ crate-type = ["cdylib", "rlib"]
 name = "hca"
 path = "igua/hca/lib.rs"
 
-[dependencies.gb-io]
-version = "0.7"
 [dependencies.pyo3]
 version = "0.23"
 [dependencies.numpy]
