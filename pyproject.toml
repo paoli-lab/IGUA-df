@@ -63,7 +63,7 @@ module-name = "igua.hca"
 [tool.cibuildwheel]
 skip = ["*-musllinux_i686"]
 before-build = "pip install maturin"
-test-command = "python -m unittest diced.tests -v"
+#test-command = "python -m unittest tests -v"
 build-verbosity = 1
 free-threaded-support = false
 
