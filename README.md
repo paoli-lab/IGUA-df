@@ -1,4 +1,4 @@
-# 🦎 IGUA [![Stars](https://img.shields.io/github/stars/althonos/IGUA.svg?style=social&maxAge=3600&label=Star)](https://github.com/althonos/IGUA/stargazers)
+# 🦎 IGUA [![Stars](https://img.shields.io/github/stars/zellerlab/IGUA.svg?style=social&maxAge=3600&label=Star)](https://github.com/zellerlab/IGUA/stargazers)
 
 *Iterative Gene clUster Analysis, a high-throughput method for gene cluster family identification.*
 
@@ -33,8 +33,7 @@ now you can only install it through GitHub. Clone the repository and then
 install the package with:
 
 ```console
-$ git clone https://github.com/althonos/IGUA
-$ pip install --user .
+$ pip install --user git+https://github.com/zellerlab/IGUA
 ```
 
 This will compile the Rust extension code and install the package with a new
@@ -101,7 +100,7 @@ point numbers instead of the `double` precision used by default. Use the
 ### ⚠️ Issue Tracker
 
 Found a bug ? Have an enhancement request ? Head over to the [GitHub issue
-tracker](https://github.com/althonos/IGUA/issues) if you need to report
+tracker](https://github.com/zellerlab/IGUA/issues) if you need to report
 or ask something. If you are filing in on a bug, please include as much
 information as you can about the issue, and try to recreate the same bug
 in a simple, easily reproducible situation.
@@ -109,14 +108,14 @@ in a simple, easily reproducible situation.
 ### 🏗️ Contributing
 
 Contributions are more than welcome! See
-[`CONTRIBUTING.md`](https://github.com/althonos/IGUA/blob/main/CONTRIBUTING.md)
+[`CONTRIBUTING.md`](https://github.com/zellerlab/IGUA/blob/main/CONTRIBUTING.md)
 for more details.
 
 
 ## 📋 Changelog
 
 This project adheres to [Semantic Versioning](http://semver.org/spec/v2.0.0.html)
-and provides a [changelog](https://github.com/althonos/IGUA/blob/main/CHANGELOG.md)
+and provides a [changelog](https://github.com/zellerlab/IGUA/blob/main/CHANGELOG.md)
 in the [Keep a Changelog](http://keepachangelog.com/en/1.0.0/) format.
 
 

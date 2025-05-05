@@ -44,11 +44,11 @@ dependencies = [
 ]
 
 [project.urls]
-"Homepage" = "https://github.com/althonos/IGUA/"
-"Bug Tracker" = "https://github.com/althonos/IGUA/issues"
-# "Changelog" = "https://github.com/althonos/IGUA/blob/master/CHANGELOG.md"
-# "Coverage" = "https://codecov.io/gh/althonos/IGUA/"
-# "Builds" = "https://github.com/althonos/IGUA/actions/"
+"Homepage" = "https://github.com/zellerlab/IGUA/"
+"Bug Tracker" = "https://github.com/zellerlab/IGUA/issues"
+# "Changelog" = "https://github.com/zellerlab/IGUA/blob/master/CHANGELOG.md"
+# "Coverage" = "https://codecov.io/gh/zellerlab/IGUA/"
+# "Builds" = "https://github.com/zellerlab/IGUA/actions/"
 # "PyPI" = "https://pypi.org/project/IGUA"
 
 [project.scripts]
