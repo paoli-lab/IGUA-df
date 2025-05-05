@@ -14,7 +14,7 @@ jobs:
     strategy:
       matrix:
         include:
-        - python-version: 3.9
+        - python-version: "3.9"
           python-release: v3.9
           python-impl: CPython
         - python-version: "3.10"
@@ -29,12 +29,6 @@ jobs:
         - python-version: "3.13"
           python-release: v3.13
           python-impl: CPython
-        - python-version: pypy-3.9
-          python-release: v3.9
-          python-impl: PyPy
-        - python-version: pypy-3.10
-          python-release: v3.10
-          python-impl: PyPy
     steps:
     - name: Checkout code
       uses: actions/checkout@v3
@@ -61,7 +55,7 @@ jobs:
     strategy:
       matrix:
         include:
-        - python-version: 3.9
+        - python-version: "3.9"
           python-release: v3.9
           python-impl: CPython
         - python-version: "3.10"
@@ -76,12 +70,6 @@ jobs:
         - python-version: "3.13"
           python-release: "v3.13"
           python-impl: CPython
-        - python-version: pypy-3.9
-          python-release: v3.9
-          python-impl: PyPy
-        - python-version: pypy-3.10
-          python-release: v3.10
-          python-impl: PyPy
     steps:
     - name: Checkout code
       uses: actions/checkout@v3
