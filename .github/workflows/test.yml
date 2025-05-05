@@ -1,0 +1,126 @@
+name: Test
+
+on:
+  - push
+  - pull_request
+
+jobs:
+
+  test_linux:
+    name: Test (Linux, x86-64)
+    runs-on: ubuntu-latest
+    env:
+      OS: Linux
+    strategy:
+      matrix:
+        include:
+        - python-version: 3.9
+          python-release: v3.9
+          python-impl: CPython
+        - python-version: "3.10"
+          python-release: v3.10
+          python-impl: CPython
+        - python-version: "3.11"
+          python-release: v3.11
+          python-impl: CPython
+        - python-version: "3.12"
+          python-release: v3.12
+          python-impl: CPython
+        - python-version: "3.13"
+          python-release: v3.13
+          python-impl: CPython
+        - python-version: pypy-3.9
+          python-release: v3.9
+          python-impl: PyPy
+        - python-version: pypy-3.10
+          python-release: v3.10
+          python-impl: PyPy
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v3
+    - name: Setup Python ${{ matrix.python-version }}
+      uses: actions/setup-python@v5
+      with:
+        python-version: ${{ matrix.python-version }}
+    - name: Setup Rust
+      uses: dtolnay/rust-toolchain@stable
+    - name: Update CI requirements
+      run: python -m pip install -U -r .github/workflows/requirements.txt
+    - name: Build and install package
+      run: python -m pip install . -vv
+    - name: Download test data
+      run: "wget 'https://dl.secondarymetabolites.org/mibig/mibig_gbk_3.1.tar.gz' -O- | tar xz --wildcards \\*.gbk -O | tee mibig3.gbk"
+    - name: Test Rust extension
+      run: igua -i mibig3.gbk -o mibig3.tsv
+
+  test_osx:
+    name: Test (OSX, x86-64)
+    runs-on: macos-latest
+    env:
+      OS: OSX
+    strategy:
+      matrix:
+        include:
+        - python-version: 3.9
+          python-release: v3.9
+          python-impl: CPython
+        - python-version: "3.10"
+          python-release: "v3.10"
+          python-impl: CPython
+        - python-version: "3.11"
+          python-release: "v3.11"
+          python-impl: CPython
+        - python-version: "3.12"
+          python-release: "v3.12"
+          python-impl: CPython
+        - python-version: "3.13"
+          python-release: "v3.13"
+          python-impl: CPython
+        - python-version: pypy-3.9
+          python-release: v3.9
+          python-impl: PyPy
+        - python-version: pypy-3.10
+          python-release: v3.10
+          python-impl: PyPy
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v3
+    - name: Setup Python ${{ matrix.python-version }}
+      uses: actions/setup-python@v5
+      with:
+        python-version: ${{ matrix.python-version }}
+    - name: Setup Rust
+      uses: dtolnay/rust-toolchain@stable
+    - name: Update CI requirements
+      run: python -m pip install -U -r .github/workflows/requirements.txt
+    - name: Build and install package
+      run: python -m pip install . -vv
+    - name: Download test data
+      run: "wget 'https://dl.secondarymetabolites.org/mibig/mibig_gbk_3.1.tar.gz' -O- | tar xz --wildcards \\*.gbk -O | tee mibig3.gbk"
+    - name: Test Rust extension
+      run: igua -i mibig3.gbk -o mibig3.tsv
+
+  # coverage:
+  #   name: Coverage
+  #   runs-on: ubuntu-latest
+  #   strategy:
+  #     matrix:
+  #       include:
+  #       - python-version: "3.13"
+  #         python-release: "v3.13"
+  #         python-impl: CPython
+  #   steps:
+  #   - name: Checkout code
+  #     uses: actions/checkout@v3
+  #   - name: Set up Python ${{ matrix.python-version }}
+  #     uses: actions/setup-python@v5
+  #     with:
+  #       python-version: ${{ matrix.python-version }}
+  #   - name: Setup Rust
+  #     uses: dtolnay/rust-toolchain@stable
+  #   - name: Install tarpaulin
+  #     run: cargo install cargo-tarpaulin
+  #   - name: Measure code coverage
+  #     run: cargo tarpaulin -v --out Xml --ciserver github-actions
+  #   - name: Upload coverage statistics
+  #     uses: codecov/codecov-action@v2
