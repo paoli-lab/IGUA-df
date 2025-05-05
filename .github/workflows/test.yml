@@ -43,9 +43,9 @@ jobs:
     - name: Build and install package
       run: python -m pip install . -vv
     - name: Download MMseqs2
-      run: sh ./misc/download-mmseqs.sh "$HOME/.local/bin"
+      run: sh ./misc/download-mmseqs.sh /usr/local/bin
     - name: Download test data
-      run: "wget 'https://dl.secondarymetabolites.org/mibig/mibig_gbk_3.1.tar.gz' -O- | tar xz --wildcards \\*.gbk -O | tee mibig3.gbk"
+      run: "wget 'https://dl.secondarymetabolites.org/mibig/mibig_gbk_3.1.tar.gz' -O- | tar xz --wildcards \\*.gbk -O > mibig3.gbk"
     - name: Test Rust extension
       run: igua -i mibig3.gbk -o mibig3.tsv
 
@@ -86,9 +86,9 @@ jobs:
     - name: Build and install package
       run: python -m pip install . -vv
     - name: Download MMseqs2
-      run: sh ./misc/download-mmseqs.sh "$HOME/.local/bin"
+      run: sh ./misc/download-mmseqs.sh /usr/local/bin
     - name: Download test data
-      run: "wget 'https://dl.secondarymetabolites.org/mibig/mibig_gbk_3.1.tar.gz' -O- | tar xz --wildcards \\*.gbk -O | tee mibig3.gbk"
+      run: "wget 'https://dl.secondarymetabolites.org/mibig/mibig_gbk_3.1.tar.gz' -O- | tar xz --wildcards \\*.gbk -O > mibig3.gbk"
     - name: Test Rust extension
       run: igua -i mibig3.gbk -o mibig3.tsv
 
