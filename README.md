@@ -84,9 +84,9 @@ different folder, use the `--workdir` flag.
 
 ### 🫧 Clustering
 
-By default, IGUA will use **complete** linkage clustering and a relative distance 
-threshold of `0.5`, which corresponds to clusters inside a GCF having at most
-50% of estimated difference at the amino-acid level. These two options can be
+By default, IGUA will use **average** linkage clustering and a relative distance 
+threshold of `0.8`, which corresponds to clusters inside a GCF having at most
+20% of estimated difference at the amino-acid level. These two options can be
 changed with the `--clustering-method` and `--clustering-distance` flags.
 
 Additionally, the precision of the distance matrix used for the clustering can
