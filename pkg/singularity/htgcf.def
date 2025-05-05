@@ -2,18 +2,14 @@ Bootstrap: docker
 From: alpine:3.19.1
 
 %setup
-    mkdir -p build/mmseqs/mmseqs_avx2 build/mmseqs/mmseqs_sse2 build/mmseqs/mmseqs_sse41
-    wget 'https://github.com/soedinglab/MMseqs2/releases/download/15-6f452/mmseqs-linux-avx2.tar.gz' -O- | tar xz -C build/mmseqs/mmseqs_avx2 --strip-components 2
-    wget 'https://github.com/soedinglab/MMseqs2/releases/download/15-6f452/mmseqs-linux-sse2.tar.gz' -O- | tar xz -C build/mmseqs/mmseqs_sse2 --strip-components 2
-    wget 'https://github.com/soedinglab/MMseqs2/releases/download/15-6f452/mmseqs-linux-sse41.tar.gz' -O- | tar xz -C build/mmseqs/mmseqs_sse41 --strip-components 2
-    wget 'https://github.com/soedinglab/MMseqs2/raw/master/util/mmseqs_wrapper.sh' -O build/mmseqs/mmseqs_wrapper.sh
+    sh ./misc/download-mmseqs.sh build/mmseqs
 
 %files
     . /usr/src/igua
-    build/mmseqs/mmseqs_sse2/mmseqs  /usr/local/bin/mmseqs_sse2
-    build/mmseqs/mmseqs_sse41/mmseqs /usr/local/bin/mmseqs_sse41
-    build/mmseqs/mmseqs_avx2/mmseqs  /usr/local/bin/mmseqs_avx2
-    build/mmseqs/mmseqs_wrapper.sh   /usr/bin/mmseqs
+    build/mmseqs/mmseqs_sse2  /usr/local/bin/mmseqs_sse2
+    build/mmseqs/mmseqs_sse41 /usr/local/bin/mmseqs_sse41
+    build/mmseqs/mmseqs_avx2  /usr/local/bin/mmseqs_avx2
+    build/mmseqs/mmseqs       /usr/local/bin/mmseqs
 
 %post
     apk add --no-cache --force-non-repository -t build-dependencies musl-dev git rust cargo
@@ -21,7 +17,7 @@ From: alpine:3.19.1
     python3 -m pip install --break-system-packages --no-cache-dir --no-deps -vv gb-io -vv
     python3 -m pip install --break-system-packages --no-cache-dir --only-binary :all: -vv /usr/src/igua
     apk del build-dependencies build-dependencies
-    chmod 777 /usr/bin/mmseqs /usr/local/bin/mmseqs*
+    chmod 777 /usr/local/bin/mmseqs /usr/local/bin/mmseqs*
 
 %runscript
     exec igua $@
