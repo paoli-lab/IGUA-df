@@ -13,9 +13,9 @@
 [![License](https://img.shields.io/badge/license-GPL--3.0--or--later-blue.svg?style=flat-square&maxAge=2678400)](https://choosealicense.com/licenses/gpl-3.0/)
 [![Source](https://img.shields.io/badge/source-GitHub-303030.svg?maxAge=2678400&style=flat-square)](https://github.com/zellerlab/igua/)
 [![Mirror](https://img.shields.io/badge/mirror-EMBL-009f4d?style=flat-square&maxAge=2678400)](https://git.embl.de/larralde/igua/)
-[![GitHub issues](https://img.shields.io/github/issues/zellerlab/igua.svg?style=flat-square&maxAge=600)](https://github.com/zellerlab/igua/issues)
+[![GitHub issues](https://img.shields.io/github/issues/zellerlab/IGUA.svg?style=flat-square&maxAge=600)](https://github.com/zellerlab/IGUA/issues)
 [![Docs](https://img.shields.io/readthedocs/igua/latest?style=flat-square&maxAge=600)](https://igua.readthedocs.io)
-[![Changelog](https://img.shields.io/badge/keep%20a-changelog-8A0707.svg?maxAge=2678400&style=flat-square)](https://github.com/zellerlab/igua/blob/master/CHANGELOG.md)
+[![Changelog](https://img.shields.io/badge/keep%20a-changelog-8A0707.svg?maxAge=2678400&style=flat-square)](https://github.com/zellerlab/IGUA/blob/master/CHANGELOG.md)
 [![Downloads](https://img.shields.io/pypi/dm/igua?style=flat-square&color=303f9f&maxAge=86400&label=downloads)](https://pepy.tech/project/igua)
 
 
