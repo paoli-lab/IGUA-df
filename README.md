@@ -45,17 +45,14 @@ to transfer annotations to the GCFs.
 
 ## 🔧 Installing
 
-IGUA will ultimately be available directly from PyPI and Bioconda, but for 
-now you can only install it through GitHub. Clone the repository and then 
-install the package with:
+IGUA can be downloaded directly from PyPI, which hosts pre-compiled 
+distributions for Linux, MacOS and Windows. Simply install with `pip`:
 
 ```console
-$ pip install --user git+https://github.com/zellerlab/IGUA
+$ pip install igua
 ```
 
-This will compile the Rust extension code and install the package with a new
-`igua` executable on your machine. **You will need to install MMseqs2 yourself
-through other means.**
+**Note that you will need to install MMseqs2 yourself through other means.**
 
 
 ## 💡 Running
