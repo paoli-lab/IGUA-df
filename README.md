@@ -6,7 +6,7 @@
 [![Coverage](https://img.shields.io/codecov/c/gh/zellerlab/IGUA?logo=codecov&style=flat-square&maxAge=3600)](https://codecov.io/gh/zellerlab/IGUA/)
 [![PyPI](https://img.shields.io/pypi/v/igua.svg?logo=pypi&style=flat-square&maxAge=3600)](https://pypi.org/project/igua)
 [![Bioconda](https://img.shields.io/conda/vn/bioconda/igua?logo=anaconda&style=flat-square&maxAge=3600)](https://anaconda.org/bioconda/igua)
-[![AUR](https://img.shields.io/aur/version/python-igua?logo=archlinux&style=flat-square&maxAge=3600)](https://aur.archlinux.org/packages/python-igua)
+[![AUR](https://img.shields.io/aur/version/igua?logo=archlinux&style=flat-square&maxAge=3600)](https://aur.archlinux.org/packages/igua)
 [![Wheel](https://img.shields.io/pypi/wheel/igua.svg?style=flat-square&maxAge=3600)](https://pypi.org/project/igua/#files)
 [![Python Versions](https://img.shields.io/pypi/pyversions/igua.svg?logo=python&style=flat-square&maxAge=3600)](https://pypi.org/project/igua/#files)
 [![Python Implementations](https://img.shields.io/pypi/implementation/igua.svg?logo=python&style=flat-square&maxAge=3600&label=impl)](https://pypi.org/project/igua/#files)
