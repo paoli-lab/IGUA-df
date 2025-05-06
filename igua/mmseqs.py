@@ -205,12 +205,24 @@ class MMSeqs(object):
         # wrap progress if a rich progress bar is available
         if self.progress:
             self._wrap_progress(process)
+            stdout = stderr = None
+        else:
+            stdout, stderr = process.communicate()
 
         # return a completed process instance for compatibility
         return subprocess.CompletedProcess(
             params,
-            process.returncode
+            process.returncode,
         )
+
+    def version(self) -> str:
+        try:
+            params = [self.binary, "version"]
+            process = subprocess.Popen(params, stdout=subprocess.PIPE)
+            stdout, stderr = process.communicate()
+            return stdout.decode().strip()
+        except OSError as err:
+            raise RuntimeError(f"Failed to find MMseqs2 binary {self.binary!r}") from err
 
 
 class DatabaseType(enum.IntEnum):
