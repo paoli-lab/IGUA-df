@@ -23,7 +23,7 @@
 
 IGUA is a method for high-throughput content-agnostic identification of
 Gene Cluster Families (GCFs) from gene clusters of genomic and metagenomic 
-origin. It performs three clustering iteration to perform GCF assignment:
+origin. It performs three clustering iterations to perform GCF assignment:
 
 - *Fragment mapping identification*: Reduce the input sequence space by 
   identifying which gene clusters are fragments of each other. 
