@@ -6,7 +6,7 @@
 [![Coverage](https://img.shields.io/codecov/c/gh/zellerlab/IGUA?logo=codecov&style=flat-square&maxAge=3600)](https://codecov.io/gh/zellerlab/IGUA/)
 [![PyPI](https://img.shields.io/pypi/v/igua.svg?logo=pypi&style=flat-square&maxAge=3600)](https://pypi.org/project/igua)
 [![Bioconda](https://img.shields.io/conda/vn/bioconda/igua?logo=anaconda&style=flat-square&maxAge=3600)](https://anaconda.org/bioconda/igua)
-[![AUR](https://img.shields.io/aur/version/python-igua?logo=archlinux&style=flat-square&maxAge=3600)](https://aur.archlinux.org/packages/python-igua)
+[![AUR](https://img.shields.io/aur/version/igua?logo=archlinux&style=flat-square&maxAge=3600)](https://aur.archlinux.org/packages/igua)
 [![Wheel](https://img.shields.io/pypi/wheel/igua.svg?style=flat-square&maxAge=3600)](https://pypi.org/project/igua/#files)
 [![Python Versions](https://img.shields.io/pypi/pyversions/igua.svg?logo=python&style=flat-square&maxAge=3600)](https://pypi.org/project/igua/#files)
 [![Python Implementations](https://img.shields.io/pypi/implementation/igua.svg?logo=python&style=flat-square&maxAge=3600&label=impl)](https://pypi.org/project/igua/#files)
@@ -23,7 +23,7 @@
 
 IGUA is a method for high-throughput content-agnostic identification of
 Gene Cluster Families (GCFs) from gene clusters of genomic and metagenomic 
-origin. It performs three clustering iteration to perform GCF assignment:
+origin. It performs three clustering iterations to perform GCF assignment:
 
 - *Fragment mapping identification*: Reduce the input sequence space by 
   identifying which gene clusters are fragments of each other. 
@@ -45,17 +45,14 @@ to transfer annotations to the GCFs.
 
 ## 🔧 Installing
 
-IGUA will ultimately be available directly from PyPI and Bioconda, but for 
-now you can only install it through GitHub. Clone the repository and then 
-install the package with:
+IGUA can be downloaded directly from PyPI, which hosts pre-compiled 
+distributions for Linux, MacOS and Windows. Simply install with `pip`:
 
 ```console
-$ pip install --user git+https://github.com/zellerlab/IGUA
+$ pip install igua
 ```
 
-This will compile the Rust extension code and install the package with a new
-`igua` executable on your machine. **You will need to install MMseqs2 yourself
-through other means.**
+**Note that you will need to install MMseqs2 yourself through other means.**
 
 
 ## 💡 Running
