@@ -32,7 +32,7 @@ except ImportError:
     from argparse import HelpFormatter
 
 from . import __version__
-from .seqio import BaseDataset, GenBankDataset, GFFDataset
+from .seqio import BaseDataset, GenBankDataset, DefenseFinderDataset, GFFDataset
 from .mmseqs import MMSeqs, Database, Clustering
 from .hca import manhattan, linkage
 
@@ -103,7 +103,7 @@ def build_parser() -> argparse.ArgumentParser:
     group_input.add_argument(
         "-i",
         "--input",
-        help="The GenBank files containing the clusters to process.",
+        help="Files containing the clusters to process.",
         action="append",
         type=pathlib.Path,
         default=[],
@@ -190,10 +190,21 @@ def build_parser() -> argparse.ArgumentParser:
             "double"
         }
     )
+    parser.add_argument(
+        "--defense-finder-downstream",
+        help="Enable processing of defense finder outputs.",
+        action="store_true",
+        default=False,
+    )
     return parser
 
 
-def create_dataset(input_files: typing.List[pathlib.Path]) -> BaseDataset:
+
+def create_dataset(
+    # progress: rich.progress.Progress,
+    input_files: typing.List[pathlib.Path], 
+    defense_finder_downstream: bool=False
+    ) -> BaseDataset:
     """Constructor for Dataset, handles inputs based on input file types"""
     if not input_files:
         raise ValueError("No input files provided")
@@ -203,30 +214,40 @@ def create_dataset(input_files: typing.List[pathlib.Path]) -> BaseDataset:
         '.gbk': GenBankDataset, 
         '.genbank': GenBankDataset,
         '.gff': GFFDataset,
-        '.gff3': GFFDataset
+        '.gff3': GFFDataset,
     }
+    
+    if defense_finder_downstream:
+        # progress.console.print(f"[bold blue]{'Starting':>12}[/] defense finder downstream processing")
+        if not input_files[0].suffix == ".tsv":
+            raise TypeError(
+                f"Expected a TSV file for DefenseFinderDataset, got {input_files[0].suffix!r}"
+            )
+        else: 
+            return DefenseFinderDataset()
 
-    # check file types and create dataset    
-    dataset_classes = set()
-    unsupported_files = []
-    for file_path in input_files:
-        if file_path.suffix in extension_mapping:
-            dataset_classes.add(extension_mapping[file_path.suffix])
-        else:
-            unsupported_files.append(file_path)
+    else:
+        # check file types and create dataset    
+        dataset_classes = set()
+        unsupported_files = []
+        for file_path in input_files:
+            if file_path.suffix in extension_mapping:
+                dataset_classes.add(extension_mapping[file_path.suffix])
+            else:
+                unsupported_files.append(file_path)
+        
+        if unsupported_files:
+            raise TypeError(
+                f"Unsupported file type(s): {', '.join(str(f.suffix) for f in unsupported_files)}. "
+                f"Supported types are {', '.join(sorted(extension_mapping.keys()))}"
+            )
+        
+        if len(dataset_classes) > 1:
+            raise TypeError(
+                f"Mixed file types detected. All files must be compatible with the same dataset type."
+            )
     
-    if unsupported_files:
-        raise TypeError(
-            f"Unsupported file type(s): {', '.join(str(f.suffix) for f in unsupported_files)}. "
-            f"Supported types are {', '.join(sorted(extension_mapping.keys()))}"
-        )
-    
-    if len(dataset_classes) > 1:
-        raise TypeError(
-            f"Mixed file types detected. All files must be compatible with the same dataset type."
-        )
-    
-    return dataset_classes.pop()()
+    return dataset_classes.pop()() # type: ignore
 
 def get_protein_representative(
     mmseqs: MMSeqs,
@@ -339,7 +360,8 @@ def main(argv: typing.Optional[typing.List[str]] = None) -> int:
             return errno.ENOENT
 
         # create appropriate dataset handler
-        dataset = create_dataset(args.input)
+        dataset = create_dataset(args.input, args.defense_finder_downstream)
+        print(dataset)
 
         # extract raw sequences
         clusters_fna = workdir.joinpath("clusters.fna")
