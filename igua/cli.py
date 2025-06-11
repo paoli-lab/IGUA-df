@@ -201,10 +201,10 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def create_dataset(
-    # progress: rich.progress.Progress,
+    progress: rich.progress.Progress,
     input_files: typing.List[pathlib.Path], 
     defense_finder_downstream: bool=False
-    ) -> BaseDataset:
+) -> BaseDataset:
     """Constructor for Dataset, handles inputs based on input file types"""
     if not input_files:
         raise ValueError("No input files provided")
@@ -218,34 +218,40 @@ def create_dataset(
     }
     
     if defense_finder_downstream:
-        # progress.console.print(f"[bold blue]{'Starting':>12}[/] defense finder downstream processing")
-        if not input_files[0].suffix == ".tsv":
-            raise TypeError(
-                f"Expected a TSV file for DefenseFinderDataset, got {input_files[0].suffix!r}"
-            )
-        else: 
-            return DefenseFinderDataset()
-
-    else:
-        # check file types and create dataset    
-        dataset_classes = set()
-        unsupported_files = []
-        for file_path in input_files:
-            if file_path.suffix in extension_mapping:
-                dataset_classes.add(extension_mapping[file_path.suffix])
-            else:
-                unsupported_files.append(file_path)
-        
-        if unsupported_files:
-            raise TypeError(
-                f"Unsupported file type(s): {', '.join(str(f.suffix) for f in unsupported_files)}. "
-                f"Supported types are {', '.join(sorted(extension_mapping.keys()))}"
-            )
-        
-        if len(dataset_classes) > 1:
-            raise TypeError(
-                f"Mixed file types detected. All files must be compatible with the same dataset type."
-            )
+        progress.console.print(f"[bold blue]{'Starting':>12}[/] defense finder downstream processing")
+        return DefenseFinderDataset()
+    
+    # Auto-detect DefenseFinder dataset from TSV content
+    if len(input_files) == 1 and input_files[0].suffix == ".tsv":
+        try:
+            # Check first few lines of TSV for defense finder columns
+            with open(input_files[0], "r") as f:
+                header = f.readline().strip().split("\t")
+                if any(col in header for col in ["fna_file", "faa_file", "system_id", "sys_id"]):
+                    progress.console.print(f"[bold blue]{'Detected':>12}[/] DefenseFinder format TSV")
+                    return DefenseFinderDataset()
+        except Exception:
+            pass
+            
+    # Check file types and create dataset    
+    dataset_classes = set()
+    unsupported_files = []
+    for file_path in input_files:
+        if file_path.suffix in extension_mapping:
+            dataset_classes.add(extension_mapping[file_path.suffix])
+        else:
+            unsupported_files.append(file_path)
+    
+    if unsupported_files:
+        raise TypeError(
+            f"Unsupported file type(s): {', '.join(str(f.suffix) for f in unsupported_files)}. "
+            f"Supported types are {', '.join(sorted(extension_mapping.keys()))}"
+        )
+    
+    if len(dataset_classes) > 1:
+        raise TypeError(
+            f"Mixed file types detected. All files must be compatible with the same dataset type."
+        )
     
     return dataset_classes.pop()() # type: ignore
 
@@ -274,6 +280,7 @@ def make_compositions(
 
     task = progress.add_task(description=f"[bold blue]{'Working':>9}[/]", total=len(protein_clusters))
     for row in progress.track(protein_clusters.itertuples(), task_id=task):
+        print(row)
         cluster_index = representatives[row.cluster_id]
         prot_index = protein_representatives[row.protein_representative]
         compositions[cluster_index, prot_index] += protein_sizes[
@@ -331,7 +338,7 @@ def main(argv: typing.Optional[typing.List[str]] = None) -> int:
     parser = build_parser()
     if not isinstance(argcomplete, ImportError):
         argcomplete.autocomplete(parser)
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
 
     with contextlib.ExitStack() as ctx:
         # open temporary folder
@@ -360,8 +367,8 @@ def main(argv: typing.Optional[typing.List[str]] = None) -> int:
             return errno.ENOENT
 
         # create appropriate dataset handler
-        dataset = create_dataset(args.input, args.defense_finder_downstream)
-        print(dataset)
+        dataset = create_dataset(progress, args.input, args.defense_finder_downstream)
+        # print(dataset)
 
         # extract raw sequences
         clusters_fna = workdir.joinpath("clusters.fna")
@@ -411,6 +418,7 @@ def main(argv: typing.Optional[typing.List[str]] = None) -> int:
             progress.console.print(
                 f"[bold blue]{'Extracting':>12}[/] protein sequences from clusters"
             )
+            # fix extract poteins to subset using representatives i.e. unique ntd representative 
             protein_sizes = dataset.extract_proteins(
                 progress, args.input, proteins_faa, representatives
             )
