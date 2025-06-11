@@ -280,7 +280,6 @@ def make_compositions(
 
     task = progress.add_task(description=f"[bold blue]{'Working':>9}[/]", total=len(protein_clusters))
     for row in progress.track(protein_clusters.itertuples(), task_id=task):
-        print(row)
         cluster_index = representatives[row.cluster_id]
         prot_index = protein_representatives[row.protein_representative]
         compositions[cluster_index, prot_index] += protein_sizes[
@@ -430,9 +429,14 @@ def main(argv: typing.Optional[typing.List[str]] = None) -> int:
             prot_clusters = prot_result.to_dataframe(columns=["protein_representative", "protein_id"])
 
             # extract protein representatives
-            prot_clusters["cluster_id"] = (
-                prot_clusters["protein_id"].str.rsplit("_", n=1).str[0]
-            )
+            if args.defense_finder_downstream:
+                prot_clusters["cluster_id"] = (
+                    prot_clusters["protein_id"]
+                )
+            else: 
+                prot_clusters["cluster_id"] = (
+                    prot_clusters["protein_id"].str.rsplit("_", n=1).str[0]
+                )
             protein_representatives = {
                 x: i
                 for i, x in enumerate(
