@@ -196,6 +196,56 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         default=False,
     )
+    
+    group_defense = parser.add_argument_group(
+        'Defense Finder',
+        'Arguments for working with defense finder output.'
+    )
+    group_defense.add_argument(
+        "--defense-metadata",
+        help="Path to TSV file with columns: systems_tsv, genes_tsv, gff_file, fasta_file, etc.",
+        type=pathlib.Path,
+    )
+    group_defense.add_argument(
+        "--defense-systems-tsv",
+        help="Path to DefenseFinder systems TSV file (requires --defense-genes-tsv, --gff-file, --genome-file)",
+        type=pathlib.Path,
+    )
+    group_defense.add_argument(
+        "--defense-genes-tsv",
+        help="Path to DefenseFinder genes TSV file",
+        type=pathlib.Path,
+    )
+    group_defense.add_argument(
+        "--gff-file",
+        help="Path to GFF annotation file",
+        type=pathlib.Path,
+    )
+    group_defense.add_argument(
+        "--genome-file",
+        help="Path to genome FASTA file",
+        type=pathlib.Path,
+    )
+    group_defense.add_argument(
+        "--write-defense-systems",
+        help="Write extracted defense systems to this directory",
+        type=pathlib.Path,
+    )
+    group_defense.add_argument(
+    "--protein-file",
+    "--faa-file",
+    dest="protein_file",
+    help="Path to protein FASTA file (.faa)",
+    type=pathlib.Path,
+    )
+    group_defense.add_argument(
+        "--gene-file",
+        "--fna-file",
+        dest="gene_file",
+        help="Path to gene nucleotide FASTA file (.fna)",
+        type=pathlib.Path,
+    )
+    
     return parser
 
 
@@ -203,20 +253,36 @@ def build_parser() -> argparse.ArgumentParser:
 def create_dataset(
     progress: rich.progress.Progress,
     input_files: typing.List[pathlib.Path], 
-    defense_finder_downstream: bool=False
+    defense_finder_downstream: bool=False,
+    defense_metadata: typing.Optional[pathlib.Path]=None,
+    defense_systems_tsv: typing.Optional[pathlib.Path]=None,
+    defense_genes_tsv: typing.Optional[pathlib.Path]=None,
+    gff_file: typing.Optional[pathlib.Path]=None,
+    genome_file: typing.Optional[pathlib.Path]=None,
+    protein_file: typing.Optional[pathlib.Path]=None,
+    gene_file: typing.Optional[pathlib.Path]=None,
+    write_defense_systems: typing.Optional[pathlib.Path]=None
 ) -> BaseDataset:
     """Constructor for Dataset, handles inputs based on input file types"""
     if not input_files:
         raise ValueError("No input files provided")
     
-    extension_mapping = {
-        '.gb': GenBankDataset,
-        '.gbk': GenBankDataset, 
-        '.genbank': GenBankDataset,
-        '.gff': GFFDataset,
-        '.gff3': GFFDataset,
-    }
+    # Handle advanced defense finder processing
+    if defense_metadata or (defense_systems_tsv and defense_genes_tsv and gff_file and genome_file):
+        dataset = DefenseFinderDataset()
+        dataset.defense_metadata = defense_metadata
+        dataset.defense_systems_tsv = defense_systems_tsv
+        dataset.defense_genes_tsv = defense_genes_tsv
+        dataset.gff_file = gff_file
+        dataset.genome_file = genome_file
+        dataset.protein_file = protein_file  # Add protein file
+        dataset.gene_file = gene_file        # Add gene file
+        dataset.write_output = write_defense_systems is not None
+        dataset.output_dir = write_defense_systems
+        progress.console.print(f"[bold blue]{'Using':>12}[/] advanced DefenseFinder processing")
+        return dataset
     
+    # Basic defense finder mode
     if defense_finder_downstream:
         progress.console.print(f"[bold blue]{'Starting':>12}[/] defense finder downstream processing")
         return DefenseFinderDataset()
@@ -227,12 +293,33 @@ def create_dataset(
             # Check first few lines of TSV for defense finder columns
             with open(input_files[0], "r") as f:
                 header = f.readline().strip().split("\t")
+                
+                # Advanced columns (new method)
+                advanced_cols = ["systems_tsv", "genes_tsv", "gff_file", "fasta_file"]
+                if any(col in header for col in advanced_cols):
+                    progress.console.print(f"[bold blue]{'Detected':>12}[/] DefenseFinder metadata format TSV")
+                    dataset = DefenseFinderDataset()
+                    dataset.defense_metadata = input_files[0]
+                    dataset.write_output = write_defense_systems is not None
+                    dataset.output_dir = write_defense_systems
+                    return dataset
+                
+                # Basic columns (existing method)
                 if any(col in header for col in ["fna_file", "faa_file", "system_id", "sys_id"]):
                     progress.console.print(f"[bold blue]{'Detected':>12}[/] DefenseFinder format TSV")
                     return DefenseFinderDataset()
         except Exception:
             pass
             
+    # Extension-based file type detection    
+    extension_mapping = {
+        '.gb': GenBankDataset,
+        '.gbk': GenBankDataset, 
+        '.genbank': GenBankDataset,
+        '.gff': GFFDataset,
+        '.gff3': GFFDataset,
+    }
+    
     # Check file types and create dataset    
     dataset_classes = set()
     unsupported_files = []
@@ -273,19 +360,91 @@ def make_compositions(
     representatives: typing.Dict[str, int],
     protein_representatives: typing.Dict[str, int],
     protein_sizes: typing.Dict[str, int],
-) -> anndata.AnnData: #scipy.sparse.csr_matrix:
+) -> anndata.AnnData:
+    """
+    Create a composition matrix from protein clusters.
+    Compatible with both standard IGUA and DefenseFinder data formats.
+    """
     compositions = scipy.sparse.dok_matrix(
         (len(representatives), len(protein_representatives)), dtype=numpy.int32
     )
 
-    task = progress.add_task(description=f"[bold blue]{'Working':>9}[/]", total=len(protein_clusters))
-    for row in progress.track(protein_clusters.itertuples(), task_id=task):
-        cluster_index = representatives[row.cluster_id]
-        prot_index = protein_representatives[row.protein_representative]
-        compositions[cluster_index, prot_index] += protein_sizes[
-            row.protein_representative
-        ]
+    # Create a copy to avoid modifying the original DataFrame
+    clusters = protein_clusters.copy()
+    
+    # Add compatibility column for cluster ID lookups
+    if "cluster_id" in clusters.columns and len(set(clusters["cluster_id"]) & set(representatives.keys())) < len(clusters["cluster_id"].unique()):
+        progress.console.print(
+            f"[bold blue]{'Adding':>12}[/] compatibility mapping for cluster IDs"
+        )
+        # For DefenseFinder IDs, extract the base ID without strain prefix if needed
+        clusters["compat_id"] = clusters["cluster_id"].apply(
+            lambda x: x.split('_')[-1] if '_' in x and x not in representatives else x
+        )
+        lookup_column = "compat_id"
+    else:
+        # Use the original column if it's compatible
+        lookup_column = "cluster_id"
+    
+    # Add compatibility for protein representatives too
+    valid_protein_reps = set(protein_representatives.keys())
+    if len(set(clusters["protein_representative"]) & valid_protein_reps) < len(clusters["protein_representative"].unique()):
+        progress.console.print(
+            f"[bold blue]{'Adding':>12}[/] compatibility mapping for protein IDs"
+        )
+        # Create a mapping function for protein IDs
+        def normalize_protein_id(x):
+            if x in valid_protein_reps:
+                return x
+            # Try different transformations
+            # 1. Take last part after underscore (common pattern)
+            parts = x.split('_')
+            if len(parts) > 1 and parts[-1] in valid_protein_reps:
+                return parts[-1]
+            # 2. Try with just the ID part for DefenseFinder format
+            for valid_id in valid_protein_reps:
+                if valid_id in x:
+                    return valid_id
+            # No match found
+            return x
+        
+        clusters["compat_protein"] = clusters["protein_representative"].apply(normalize_protein_id)
+        protein_lookup_column = "compat_protein"
+    else:
+        protein_lookup_column = "protein_representative"
+    
+    # Get valid keys for lookups
+    valid_cluster_ids = set(representatives.keys())
+    
+    # Track statistics
+    total_rows = len(clusters)
+    skipped_rows = 0
+    
+    task = progress.add_task(description=f"[bold blue]{'Working':>9}[/]", total=total_rows)
+    for row in progress.track(clusters.itertuples(), task_id=task):
+        # Get the appropriate IDs for lookup
+        cluster_id = getattr(row, lookup_column)
+        protein_id = getattr(row, protein_lookup_column)
+        
+        # Skip invalid entries instead of raising KeyError
+        if cluster_id not in valid_cluster_ids or protein_id not in valid_protein_reps:
+            skipped_rows += 1
+            continue
+            
+        cluster_index = representatives[cluster_id]
+        prot_index = protein_representatives[protein_id]
+        
+        # Use get() with default value for protein_sizes
+        size = protein_sizes.get(protein_id, 1)
+        compositions[cluster_index, prot_index] += size
+    
     progress.remove_task(task)
+    
+    # Report statistics if rows were skipped
+    if skipped_rows > 0:
+        progress.console.print(
+            f"[bold yellow]{'Warning':>12}[/] Skipped {skipped_rows}/{total_rows} rows with invalid IDs"
+        )
 
     sorted_representatives = sorted(representatives, key=representatives.__getitem__)
     sorted_protein_representatives = sorted(protein_representatives, key=protein_representatives.__getitem__)
@@ -294,7 +453,7 @@ def make_compositions(
         obs=pandas.DataFrame(index=pandas.Index(sorted_representatives, name="cluster_id")),
         var=pandas.DataFrame(
             index=pandas.Index(sorted_protein_representatives, name="protein_id"),
-            data=dict(size=[protein_sizes[x] for x in sorted_protein_representatives]),
+            data=dict(size=[protein_sizes.get(x, 1) for x in sorted_protein_representatives]),
         )
     )
 
@@ -366,7 +525,19 @@ def main(argv: typing.Optional[typing.List[str]] = None) -> int:
             return errno.ENOENT
 
         # create appropriate dataset handler
-        dataset = create_dataset(progress, args.input, args.defense_finder_downstream)
+        dataset = create_dataset(
+            progress, 
+            args.input, 
+            args.defense_finder_downstream,
+            defense_metadata=getattr(args, 'defense_metadata', None),
+            defense_systems_tsv=getattr(args, 'defense_systems_tsv', None),
+            defense_genes_tsv=getattr(args, 'defense_genes_tsv', None),
+            gff_file=getattr(args, 'gff_file', None),
+            genome_file=getattr(args, 'genome_file', None),
+            protein_file=getattr(args, 'protein_file', None),  # Add protein file
+            gene_file=getattr(args, 'gene_file', None),        # Add gene file
+            write_defense_systems=getattr(args, 'write_defense_systems', None)
+        )
         # print(dataset)
 
         # extract raw sequences

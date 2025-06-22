@@ -2,6 +2,7 @@ import abc
 import io
 import typing
 import pathlib
+import tempfile
 import gzip
 import warnings
 
@@ -12,12 +13,12 @@ import rich.progress
 
 from .mmseqs import MMSeqs
 from .mmseqs import Database
+from .defense_extractor import DefenseExtractor
+
+
 
 _GZIP_MAGIC = b'\x1f\x8b'
 
-
-# TODO: implement extract_sequences and extract_proteins methods for defense-finder output
-# TODO: check gff files for
 
 class BaseDataset(abc.ABC):
     """Base class for dataset extraction.
@@ -178,10 +179,22 @@ class GenBankDataset(BaseDataset):
         return protein_sizes
 
 
+
+# Update the DefenseFinderDataset class
 class DefenseFinderDataset(BaseDataset):
     """DefenseFinder dataset class.
     This class is used to extract nucleotide and protein sequences from DefenseFinder output files.
     """
+    def __init__(self):
+        """Initialize the DefenseFinderDataset class."""
+        self.defense_metadata = None  # pathlib.Path to TSV with paths to defense finder files
+        self.defense_systems_tsv = None  # pathlib.Path to DefenseFinder systems TSV
+        self.defense_genes_tsv = None  # pathlib.Path to DefenseFinder genes TSV
+        self.gff_file = None  # pathlib.Path to GFF file
+        self.genome_file = None  # pathlib.Path to genome FASTA file
+        self.write_output = False  # Whether to write output files
+        self.output_dir = None  # Output directory for files
+    
     def extract_sequences(
         self,
         progress: rich.progress.Progress,
@@ -198,11 +211,22 @@ class DefenseFinderDataset(BaseDataset):
         Returns:
             DataFrame with cluster_id, cluster_length, filename
         """
+        # Check for direct DefenseFinder integration mode
+        if self._check_defense_finder_integration_mode():
+            return self._process_with_defense_extractor(progress, output)
+        
         # Handle TSV summary file
         if len(inputs) == 1 and inputs[0].suffix.lower() == ".tsv":
             progress.console.print(f"[bold blue]{'Found':>12}[/] TSV summary file")
             try:
                 df = pandas.read_csv(inputs[0], sep="\t")
+                
+                # Check if we have all required columns for advanced processing
+                required_cols = ["systems_tsv", "genes_tsv", "gff_file", "fasta_file"]
+                if all(col in df.columns for col in required_cols):
+                    # Use defense_extractor for processing
+                    return self._process_defense_files_from_tsv(progress, df, output)
+                
                 # First check for fasta_file column (genome sequences)
                 if "fasta_file" in df.columns:
                     fa_files = [pathlib.Path(f) for f in df["fasta_file"] if f]
@@ -236,103 +260,166 @@ class DefenseFinderDataset(BaseDataset):
         progress.console.print(f"[bold red]{'Error':>12}[/] No valid input files")
         return pandas.DataFrame(columns=["cluster_id", "cluster_length", "filename"]).set_index("cluster_id")
     
-    def _process_fa_files(
+    def _check_defense_finder_integration_mode(self) -> bool:
+        """Check if we're in direct DefenseFinder integration mode."""
+        # Check if direct DefenseFinder mode is enabled
+        return (
+            (self.defense_metadata is not None) or
+            (self.defense_systems_tsv is not None and 
+             self.defense_genes_tsv is not None and 
+             self.gff_file is not None and 
+             self.genome_file is not None)
+        )
+    
+    def _process_with_defense_extractor(
         self,
         progress: rich.progress.Progress,
-        fa_files: typing.List[pathlib.Path],
         output: pathlib.Path
     ) -> pandas.DataFrame:
-        """Process FASTA files containing defense system sequences.
+        """Process defense systems using the DefenseExtractor."""
+        # Create temporary directory for output if needed
+        temp_dir = None
+        if self.write_output and not self.output_dir:
+            temp_dir = tempfile.TemporaryDirectory()
+            output_dir = pathlib.Path(temp_dir.name)
+        else:
+            output_dir = self.output_dir
         
-        Args:
-            progress: Progress bar for tracking.
-            fa_files: List of FASTA files.
-            output: Output path for combined sequences.
+        try:
+            # Create extractor
+            extractor = DefenseExtractor(
+                progress=progress,
+                output_base_dir=output_dir,
+                write_output=self.write_output
+            )
             
-        Returns:
-            DataFrame with cluster_id, cluster_length, filename
-        """
+            # Use defense_metadata file if provided
+            if self.defense_metadata:
+                progress.console.print(f"[bold blue]{'Using':>12}[/] defense metadata file: {self.defense_metadata}")
+                try:
+                    df = pandas.read_csv(self.defense_metadata, sep="\t")
+                    return self._process_defense_files_from_tsv(progress, df, output, extractor)
+                except Exception as e:
+                    progress.console.print(f"[bold red]{'Error':>12}[/] reading defense metadata: {e}")
+                    return pandas.DataFrame(columns=["cluster_id", "cluster_length", "filename"]).set_index("cluster_id")
+            
+            # Use individual files
+            progress.console.print(f"[bold blue]{'Using':>12}[/] direct defense finder files")
+            
+            # Extract systems
+            systems = extractor.extract_systems(
+                systems_tsv_file=self.defense_systems_tsv,
+                genes_tsv_file=self.defense_genes_tsv,
+                gff_file=self.gff_file,
+                fasta_file=self.genome_file,
+                output_dir=output_dir if self.write_output else None
+            )
+            
+            # Write sequences to output file and create DataFrame
+            data = []
+            with open(output, "w") as dst:
+                for sys_id, system in systems.items():
+                    sequence = system["sequence"]
+                    length = system["length"]
+                    
+                    # Write to FASTA file
+                    self.write_fasta(dst, sys_id, sequence)
+                    
+                    # Record for DataFrame
+                    file_path = system.get("file_path", str(self.genome_file))
+                    data.append((sys_id, length, file_path))
+            
+            # Create and return DataFrame
+            progress.console.print(f"[bold green]{'Extracted':>12}[/] {len(data)} systems")
+            return pandas.DataFrame(
+                data=data,
+                columns=["cluster_id", "cluster_length", "filename"]
+            ).set_index("cluster_id")
+            
+        finally:
+            # Clean up temporary directory if created
+            if temp_dir:
+                temp_dir.cleanup()
+    
+    def _process_defense_files_from_tsv(
+        self,
+        progress: rich.progress.Progress,
+        df: pandas.DataFrame,
+        output: pathlib.Path,
+        extractor: typing.Optional[DefenseExtractor] = None
+    ) -> pandas.DataFrame:
+        """Process defense systems from a TSV file with paths to defense finder files."""
+        # Create extractor if not provided
+        if extractor is None:
+            extractor = DefenseExtractor(
+                progress=progress,
+                output_base_dir=self.output_dir,
+                write_output=self.write_output
+            )
+        
+        # Process each row in DataFrame
         data = []
-        done = set()
-        n_duplicate = 0
-        
         with open(output, "w") as dst:
-            task = progress.add_task(f"[bold blue]{'Processing':>9}[/] FASTA files", total=len(fa_files))
+            task = progress.add_task(f"[bold blue]{'Processing':>9}[/] defense systems", total=len(df))
             
-            for fa_file in fa_files:
-                if not fa_file.exists():
-                    progress.console.print(f"[bold yellow]{'Missing':>12}[/] {fa_file}")
+            for _, row in df.iterrows():
+                strain_id = row.get("strain_id", None)
+                progress.update(task, description=f"[bold blue]{'Processing':>9}[/] strain: {strain_id}")
+                
+                # Get required files
+                systems_tsv = pathlib.Path(row["systems_tsv"])
+                genes_tsv = pathlib.Path(row["genes_tsv"])
+                gff_file = pathlib.Path(row["gff_file"])
+                fasta_file = pathlib.Path(row["fasta_file"])
+                
+                # Check if all files exist
+                missing_files = []
+                for f, name in [(systems_tsv, "systems_tsv"), (genes_tsv, "genes_tsv"), 
+                               (gff_file, "gff_file"), (fasta_file, "fasta_file")]:
+                    if not f.exists():
+                        missing_files.append(f"{name}: {f}")
+                
+                if missing_files:
+                    progress.console.print(f"[bold yellow]{'Missing':>12}[/] files for {strain_id}: {', '.join(missing_files)}")
                     progress.update(task, advance=1)
                     continue
                 
-                # Get system ID from filename
-                sys_id = fa_file.stem
-                progress.update(task, description=f"[bold blue]{'Reading':>9}[/] {sys_id}")
+                # Extract systems
+                strain_output_dir = None
+                if self.write_output and self.output_dir:
+                    strain_output_dir = self.output_dir / (strain_id if strain_id else "unknown")
+                    strain_output_dir.mkdir(parents=True, exist_ok=True)
                 
-                try:
-                    # Check for gzip
-                    is_gzipped = False
-                    with open(fa_file, "rb") as test_f:
-                        if test_f.read(2) == _GZIP_MAGIC:
-                            is_gzipped = True
+                systems = extractor.extract_systems(
+                    systems_tsv_file=systems_tsv,
+                    genes_tsv_file=genes_tsv,
+                    gff_file=gff_file,
+                    fasta_file=fasta_file,
+                    output_dir=strain_output_dir,
+                    strain_id=strain_id
+                )
+                
+                # Write systems to output FASTA and record data
+                for sys_id, system in systems.items():
+                    sequence = system["sequence"]
+                    length = system["length"]
                     
-                    # Process file
-                    open_func = gzip.open if is_gzipped else open
-                    with open_func(fa_file, "rt") as src:
-                        seq_id = None
-                        seq_parts = []
-                        total_length = 0
-                        
-                        for line in src:
-                            line = line.strip()
-                            if not line:
-                                continue
-                                
-                            if line.startswith(">"):
-                                # Process previous sequence
-                                if seq_id and seq_parts:
-                                    sequence = "".join(seq_parts)
-                                    self.write_fasta(dst, seq_id, sequence)
-                                    total_length += len(sequence)
-                                
-                                # Start new sequence
-                                seq_id = sys_id
-                                # header = line[1:].strip()
-                                # seq_id = f"{sys_id}_{header.split()[0]}"
-                                seq_parts = []
-                            else:
-                                seq_parts.append(line)
-                        
-                        # Process final sequence
-                        if seq_id and seq_parts:
-                            sequence = "".join(seq_parts)
-                            self.write_fasta(dst, seq_id, sequence)
-                            total_length += len(sequence)
+                    # Add strain ID to system ID if available
+                    full_sys_id = f"{strain_id}_{sys_id}" if strain_id else sys_id
                     
-                    # Record system data
-                    if sys_id not in done:
-                        data.append((sys_id, total_length, str(fa_file)))
-                        done.add(sys_id)
-                    else:
-                        n_duplicate += 1
-                        
-                except Exception as e:
-                    progress.console.print(f"[bold red]{'Error':>12}[/] processing {fa_file}: {e}")
+                    # Write to FASTA file
+                    self.write_fasta(dst, full_sys_id, sequence)
                     
-                finally:
-                    progress.update(task, advance=1)
+                    # Record for DataFrame
+                    file_path = system.get("file_path", str(fasta_file))
+                    data.append((full_sys_id, length, file_path))
+                
+                progress.update(task, advance=1)
             
             progress.remove_task(task)
         
-        # Report results
-        if n_duplicate > 0:
-            progress.console.print(f"[bold yellow]{'Skipped':>12}[/] {n_duplicate} duplicate systems")
-            
-        if data:
-            progress.console.print(f"[bold green]{'Extracted':>12}[/] {len(data)} systems")
-        else:
-            progress.console.print(f"[bold red]{'Warning':>12}[/] No sequences extracted")
-            
+        # Create and return DataFrame
+        progress.console.print(f"[bold green]{'Extracted':>12}[/] {len(data)} systems")
         return pandas.DataFrame(
             data=data,
             columns=["cluster_id", "cluster_length", "filename"]
@@ -356,11 +443,23 @@ class DefenseFinderDataset(BaseDataset):
         Returns:
             Dictionary mapping protein IDs to their lengths.
         """
+        # Check for direct DefenseFinder integration mode
+        if self._check_defense_finder_integration_mode():
+            return self._extract_proteins_with_defense_extractor(progress, output, representatives)
+        
         # Handle TSV summary file
         if len(inputs) == 1 and inputs[0].suffix.lower() == ".tsv":
             progress.console.print(f"[bold blue]{'Found':>12}[/] TSV summary file")
             try:
                 df = pandas.read_csv(inputs[0], sep="\t")
+                
+                # Check if we have all required columns for advanced processing
+                required_cols = ["systems_tsv", "genes_tsv", "faa_file", "fna_file"]
+                if all(col in df.columns for col in required_cols):
+                    # Use defense_extractor for processing
+                    return self._extract_proteins_from_tsv(progress, df, output, representatives)
+                
+                # Process using existing method
                 if "faa_file" in df.columns:
                     # Filter to representatives if provided
                     if representatives:
@@ -380,115 +479,179 @@ class DefenseFinderDataset(BaseDataset):
             except Exception as e:
                 progress.console.print(f"[bold red]{'Error':>12}[/] reading TSV: {e}")
                 
-        # Handle directory with protein files
-        elif len(inputs) == 1 and inputs[0].is_dir():
-            faa_files = list(inputs[0].glob("**/*.faa"))
-            progress.console.print(f"[bold blue]{'Found':>12}[/] {len(faa_files)} protein files")
-            return self._process_faa_files(progress, faa_files, output, representatives)
-            
-        # Handle direct list of protein files
-        elif all(f.suffix.lower() in (".faa", ".fa", ".fasta") for f in inputs):
-            progress.console.print(f"[bold blue]{'Found':>12}[/] {len(inputs)} protein files")
-            return self._process_faa_files(progress, inputs, output, representatives)
-            
-        # Return empty dictionary if no valid input
-        progress.console.print(f"[bold red]{'Error':>12}[/] No valid protein input files")
-        return {}
+        # Use existing methods for other input types
+        return super().extract_proteins(progress, inputs, output, representatives)
     
-    def _process_faa_files(
+    def _extract_proteins_with_defense_extractor(
         self,
         progress: rich.progress.Progress,
-        faa_files: typing.List[pathlib.Path],
         output: pathlib.Path,
-        representatives: typing.Optional[typing.Container[str]] = None
+        representatives: typing.Container[str]
     ) -> typing.Dict[str, int]:
-        """Process protein FASTA files.
+        """Extract proteins using the DefenseExtractor."""
+        # Create temporary directory for output if needed
+        temp_dir = None
+        if self.write_output and not self.output_dir:
+            temp_dir = tempfile.TemporaryDirectory()
+            output_dir = pathlib.Path(temp_dir.name)
+        else:
+            output_dir = self.output_dir
         
-        Args:
-            progress: Progress bar for tracking.
-            faa_files: List of protein FASTA files.
-            output: Output path for combined sequences.
-            representatives: Set of representative cluster IDs (unused, filtering done earlier).
+        try:
+            # Create extractor
+            extractor = DefenseExtractor(
+                progress=progress,
+                output_base_dir=output_dir,
+                write_output=self.write_output
+            )
             
-        Returns:
-            Dictionary mapping protein IDs to their lengths.
-        """
+            # Use defense_metadata file if provided
+            if self.defense_metadata:
+                progress.console.print(f"[bold blue]{'Using':>12}[/] defense metadata file: {self.defense_metadata}")
+                try:
+                    df = pandas.read_csv(self.defense_metadata, sep="\t")
+                    return self._extract_proteins_from_tsv(progress, df, output, representatives, extractor)
+                except Exception as e:
+                    progress.console.print(f"[bold red]{'Error':>12}[/] reading defense metadata: {e}")
+                    return {}
+            
+            # Use individual files
+            progress.console.print(f"[bold blue]{'Using':>12}[/] direct defense finder files")
+            
+            # Extract proteins
+            gene_data = extractor.extract_gene_sequences(
+                systems_tsv_file=self.defense_systems_tsv,
+                genes_tsv_file=self.defense_genes_tsv,
+                faa_file=self.defense_systems_tsv.parent / "proteins.faa",
+                fna_file=self.defense_systems_tsv.parent / "genes.fna",
+                output_dir=output_dir if self.write_output else None
+            )
+            
+            # Write proteins to output file and record sizes
+            protein_sizes = {}
+            with open(output, "w") as dst:
+                for sys_id, system in gene_data.items():
+                    # Skip if not in representatives
+                    if representatives and sys_id not in representatives:
+                        continue
+                    
+                    # Write proteins
+                    for prot_id, protein in system.get("proteins", {}).items():
+                        seq_id = f"{sys_id}_{prot_id}"
+                        sequence = protein["sequence"]
+                        
+                        # Write to output
+                        self.write_fasta(dst, seq_id, sequence)
+                        
+                        # Record size
+                        protein_sizes[seq_id] = len(sequence)
+            
+            progress.console.print(
+                f"[bold green]{'Extracted':>12}[/] {len(protein_sizes)} proteins from {len(gene_data)} systems"
+            )
+            return protein_sizes
+            
+        finally:
+            # Clean up temporary directory if created
+            if temp_dir:
+                temp_dir.cleanup()
+    
+    def _extract_proteins_from_tsv(
+        self,
+        progress: rich.progress.Progress,
+        df: pandas.DataFrame,
+        output: pathlib.Path,
+        representatives: typing.Container[str],
+        extractor: typing.Optional[DefenseExtractor] = None
+    ) -> typing.Dict[str, int]:
+        """Extract proteins from defense systems specified in a TSV file."""
+        # Create extractor if not provided
+        if extractor is None:
+            extractor = DefenseExtractor(
+                progress=progress,
+                output_base_dir=self.output_dir,
+                write_output=self.write_output
+            )
+        
+        # Filter to representatives if provided
+        if representatives:
+            rep_set = set(str(r) for r in representatives)
+            # Try to match on system_id first
+            if "system_id" in df.columns:
+                df = df[df["system_id"].astype(str).isin(rep_set)]
+            # Then try sys_id
+            elif "sys_id" in df.columns:
+                df = df[df["sys_id"].astype(str).isin(rep_set)]
+        
+        # Process each row in DataFrame
         protein_sizes = {}
-        
         with open(output, "w") as dst:
-            task = progress.add_task(f"[bold blue]{'Processing':>9}[/] protein files", total=len(faa_files))
+            task = progress.add_task(f"[bold blue]{'Processing':>9}[/] protein sequences", total=len(df))
             
-            for faa_file in faa_files:
-                if not faa_file.exists():
-                    progress.console.print(f"[bold yellow]{'Missing':>12}[/] {faa_file}")
+            for _, row in df.iterrows():
+                strain_id = row.get("strain_id", None)
+                progress.update(task, description=f"[bold blue]{'Processing':>9}[/] strain: {strain_id}")
+                
+                # Get required files
+                systems_tsv = pathlib.Path(row["systems_tsv"])
+                genes_tsv = pathlib.Path(row["genes_tsv"])
+                faa_file = pathlib.Path(row["faa_file"])
+                fna_file = pathlib.Path(row.get("fna_file", "")) # fna file is optional
+                
+                # Check if required files exist
+                missing_files = []
+                for f, name in [(systems_tsv, "systems_tsv"), (genes_tsv, "genes_tsv"), (faa_file, "faa_file")]:
+                    if not f.exists():
+                        missing_files.append(f"{name}: {f}")
+                
+                if missing_files:
+                    progress.console.print(f"[bold yellow]{'Missing':>12}[/] files for {strain_id}: {', '.join(missing_files)}")
                     progress.update(task, advance=1)
                     continue
                 
-                # Get system ID from filename
-                sys_id = faa_file.stem
-                progress.update(task, description=f"[bold blue]{'Reading':>9}[/] {sys_id}")
+                # Extract gene sequences
+                strain_output_dir = None
+                if self.write_output and self.output_dir:
+                    strain_output_dir = self.output_dir / (strain_id if strain_id else "unknown") / "proteins"
+                    strain_output_dir.mkdir(parents=True, exist_ok=True)
                 
-                try:
-                    # Check for gzip
-                    is_gzipped = False
-                    with open(faa_file, "rb") as test_f:
-                        if test_f.read(2) == _GZIP_MAGIC:
-                            is_gzipped = True
+                gene_data = extractor.extract_gene_sequences(
+                    systems_tsv_file=systems_tsv,
+                    genes_tsv_file=genes_tsv,
+                    faa_file=faa_file,
+                    fna_file=fna_file if fna_file.exists() else None,
+                    output_dir=strain_output_dir,
+                    strain_id=strain_id
+                )
+                
+                # Write proteins to output file and record sizes
+                for sys_id, system in gene_data.items():
+                    # Add strain ID to system ID if available
+                    full_sys_id = f"{strain_id}_{sys_id}" if strain_id else sys_id
                     
-                    # Process file
-                    open_func = gzip.open if is_gzipped else open
-                    with open_func(faa_file, "rt") as src:
-                        seq_id = None
-                        seq_parts = []
-                        
-                        for line in src:
-                            line = line.strip()
-                            if not line:
-                                continue
-                                
-                            if line.startswith(">"):
-                                # Process previous sequence
-                                if seq_id and seq_parts:
-                                    sequence = "".join(seq_parts)
-                                    self.write_fasta(dst, seq_id, sequence)
-                                    protein_sizes[seq_id] = len(sequence)
-                                
-                                # Start new sequence
-                                # # Format as system_id_protein_id for uniqueness
-                                # # Extract protein ID from the FASTA header
-                                # header = line[1:].strip()
-                                # protein_id = header.split()[0]  # Get first word of header as protein identifier
-                                # seq_id = f"{sys_id}_{protein_id}"
-                                # seq_parts = []
-                                seq_id = sys_id
-                                seq_parts = []
-                            else:
-                                seq_parts.append(line)
-                        
-                        # Process final sequence
-                        if seq_id and seq_parts:
-                            sequence = "".join(seq_parts)
-                            self.write_fasta(dst, seq_id, sequence)
-                            protein_sizes[seq_id] = len(sequence)
-                        
-                except Exception as e:
-                    progress.console.print(f"[bold red]{'Error':>12}[/] processing {faa_file}: {e}")
+                    # Skip if not in representatives (double check)
+                    if representatives and full_sys_id not in representatives and sys_id not in representatives:
+                        continue
                     
-                finally:
-                    progress.update(task, advance=1)
+                    # Write proteins
+                    for prot_id, protein in system.get("proteins", {}).items():
+                        seq_id = f"{full_sys_id}_{prot_id}"
+                        sequence = protein["sequence"]
+                        
+                        # Write to output
+                        self.write_fasta(dst, seq_id, sequence)
+                        
+                        # Record size
+                        protein_sizes[seq_id] = len(sequence)
+                
+                progress.update(task, advance=1)
             
             progress.remove_task(task)
         
-        # Report results
-        if protein_sizes:
-            progress.console.print(
-                f"[bold green]{'Extracted':>12}[/] {len(protein_sizes)} proteins from {len(faa_files)} files"
-            )
-        else:
-            progress.console.print(f"[bold red]{'Warning':>12}[/] No protein sequences extracted")
-            
+        progress.console.print(
+            f"[bold green]{'Extracted':>12}[/] {len(protein_sizes)} proteins"
+        )
         return protein_sizes
-
 
 
 class GFFDataset(BaseDataset):
@@ -501,7 +664,7 @@ class GFFDataset(BaseDataset):
         """Initializes the GFFDataset class.
 
         Args:
-            gff (typing.Optional[typing.Union[str, pathlib.Path]], optional): Path to the GFF file. Defaults to None.
+            gff (typing.Optional[typing.Union[str, pathlib.Path]], optional): pathlib.Path to the GFF file. Defaults to None.
         """
     def extract_sequences(
         self,
