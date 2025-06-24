@@ -19,6 +19,10 @@
 [![Downloads](https://img.shields.io/pypi/dm/igua?style=flat-square&color=303f9f&maxAge=86400&label=downloads)](https://pepy.tech/project/igua)
 [![Preprint](https://img.shields.io/badge/preprint-bioRxiv-darkblue?style=flat-square&maxAge=2678400)](https://www.biorxiv.org/content/10.1101/2025.05.15.654203v1)
 
+## IGUA-df 
+
+Please refer to `notebooks/how-to.ipynb` for a quick overview of how to use the current, very preliminary version of IGUA-df.
+
 
 ## 🗺️ Overview
 
