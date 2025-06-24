@@ -224,6 +224,28 @@ class MMSeqs(object):
         except OSError as err:
             raise RuntimeError(f"Failed to find MMseqs2 binary {self.binary!r}") from err
 
+    def create_from_files(
+        self, 
+        input_files: typing.List[str], 
+        output_db: pathlib.Path
+    ) -> "Database":
+        """Create an MMSeqs database directly from multiple input files"""
+        # Convert all input files to strings
+        input_files_str = [str(f) for f in input_files]
+        
+        # Run MMSeqs createdb with all input files
+        self.run(
+            "createdb",
+            *input_files_str,
+            output_db,
+            shuffle=0,
+            createdb_mode=1,
+            write_lookup=0,
+            id_offset=0,
+            compressed=0,
+        ).check_returncode()
+        
+        return Database(self, output_db)
 
 class DatabaseType(enum.IntEnum):
     Protein = 1

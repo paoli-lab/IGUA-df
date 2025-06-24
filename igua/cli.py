@@ -32,7 +32,7 @@ except ImportError:
     from argparse import HelpFormatter
 
 from . import __version__
-from .seqio import extract_proteins, extract_sequences
+from .seqio import BaseDataset, GenBankDataset, DefenseFinderDataset, GFFDataset
 from .mmseqs import MMSeqs, Database, Clustering
 from .hca import manhattan, linkage
 
@@ -103,7 +103,7 @@ def build_parser() -> argparse.ArgumentParser:
     group_input.add_argument(
         "-i",
         "--input",
-        help="The GenBank files containing the clusters to process.",
+        help="Files containing the clusters to process.",
         action="append",
         type=pathlib.Path,
         default=[],
@@ -190,8 +190,157 @@ def build_parser() -> argparse.ArgumentParser:
             "double"
         }
     )
+    parser.add_argument(
+        "--defense-finder-downstream",
+        help="Enable processing of defense finder outputs.",
+        action="store_true",
+        default=False,
+    )
+    
+    group_defense = parser.add_argument_group(
+        'Defense Finder',
+        'Arguments for working with defense finder output.'
+    )
+    group_defense.add_argument(
+        "--defense-metadata",
+        help="Path to TSV file with columns: systems_tsv, genes_tsv, gff_file, fasta_file, etc.",
+        type=pathlib.Path,
+    )
+    group_defense.add_argument(
+        "--defense-systems-tsv",
+        help="Path to DefenseFinder systems TSV file (requires --defense-genes-tsv, --gff-file, --genome-file)",
+        type=pathlib.Path,
+    )
+    group_defense.add_argument(
+        "--defense-genes-tsv",
+        help="Path to DefenseFinder genes TSV file",
+        type=pathlib.Path,
+    )
+    group_defense.add_argument(
+        "--gff-file",
+        help="Path to GFF annotation file",
+        type=pathlib.Path,
+    )
+    group_defense.add_argument(
+        "--genome-file",
+        help="Path to genome FASTA file",
+        type=pathlib.Path,
+    )
+    group_defense.add_argument(
+        "--write-defense-systems",
+        help="Write extracted defense systems to this directory",
+        type=pathlib.Path,
+    )
+    group_defense.add_argument(
+    "--protein-file",
+    "--faa-file",
+    dest="protein_file",
+    help="Path to protein FASTA file (.faa)",
+    type=pathlib.Path,
+    )
+    group_defense.add_argument(
+        "--gene-file",
+        "--fna-file",
+        dest="gene_file",
+        help="Path to gene nucleotide FASTA file (.fna)",
+        type=pathlib.Path,
+    )
+    
     return parser
 
+
+
+def create_dataset(
+    progress: rich.progress.Progress,
+    input_files: typing.List[pathlib.Path], 
+    defense_finder_downstream: bool=False,
+    defense_metadata: typing.Optional[pathlib.Path]=None,
+    defense_systems_tsv: typing.Optional[pathlib.Path]=None,
+    defense_genes_tsv: typing.Optional[pathlib.Path]=None,
+    gff_file: typing.Optional[pathlib.Path]=None,
+    genome_file: typing.Optional[pathlib.Path]=None,
+    protein_file: typing.Optional[pathlib.Path]=None,
+    gene_file: typing.Optional[pathlib.Path]=None,
+    write_defense_systems: typing.Optional[pathlib.Path]=None
+) -> BaseDataset:
+    """Constructor for Dataset, handles inputs based on input file types"""
+    if not input_files:
+        raise ValueError("No input files provided")
+    
+    # Handle advanced defense finder processing
+    if defense_metadata or (defense_systems_tsv and defense_genes_tsv and gff_file and genome_file):
+        dataset = DefenseFinderDataset()
+        dataset.defense_metadata = defense_metadata
+        dataset.defense_systems_tsv = defense_systems_tsv
+        dataset.defense_genes_tsv = defense_genes_tsv
+        dataset.gff_file = gff_file
+        dataset.genome_file = genome_file
+        dataset.protein_file = protein_file  # Add protein file
+        dataset.gene_file = gene_file        # Add gene file
+        dataset.write_output = write_defense_systems is not None
+        dataset.output_dir = write_defense_systems
+        progress.console.print(f"[bold blue]{'Using':>12}[/] advanced DefenseFinder processing")
+        return dataset
+    
+    # Basic defense finder mode
+    if defense_finder_downstream:
+        progress.console.print(f"[bold blue]{'Starting':>12}[/] defense finder downstream processing")
+        return DefenseFinderDataset()
+    
+    # Auto-detect DefenseFinder dataset from TSV content
+    if len(input_files) == 1 and input_files[0].suffix == ".tsv":
+        try:
+            # Check first few lines of TSV for defense finder columns
+            with open(input_files[0], "r") as f:
+                header = f.readline().strip().split("\t")
+                
+                # Advanced columns (new method)
+                advanced_cols = ["systems_tsv", "genes_tsv", "gff_file", "fasta_file"]
+                if any(col in header for col in advanced_cols):
+                    progress.console.print(f"[bold blue]{'Detected':>12}[/] DefenseFinder metadata format TSV")
+                    dataset = DefenseFinderDataset()
+                    dataset.defense_metadata = input_files[0]
+                    dataset.write_output = write_defense_systems is not None
+                    dataset.output_dir = write_defense_systems
+                    return dataset
+                
+                # Basic columns (existing method)
+                if any(col in header for col in ["fna_file", "faa_file", "system_id", "sys_id"]):
+                    progress.console.print(f"[bold blue]{'Detected':>12}[/] DefenseFinder format TSV")
+                    return DefenseFinderDataset()
+        except Exception:
+            pass
+            
+    # Extension-based file type detection    
+    extension_mapping = {
+        '.gb': GenBankDataset,
+        '.gbk': GenBankDataset, 
+        '.genbank': GenBankDataset,
+        '.gff': GFFDataset,
+        '.gff3': GFFDataset,
+    }
+    
+    # Check file types and create dataset    
+    dataset_classes = set()
+    unsupported_files = []
+    for file_path in input_files:
+        if file_path.suffix in extension_mapping:
+            dataset_classes.add(extension_mapping[file_path.suffix])
+        else:
+            unsupported_files.append(file_path)
+    
+    if unsupported_files:
+        raise TypeError(
+            f"Unsupported file type(s): {', '.join(str(f.suffix) for f in unsupported_files)}. "
+            f"Supported types are {', '.join(sorted(extension_mapping.keys()))}"
+        )
+    
+    if len(dataset_classes) > 1:
+        raise TypeError(
+            f"Mixed file types detected. All files must be compatible with the same dataset type."
+        )
+    
+    return dataset_classes.pop()() # type: ignore
 
 def get_protein_representative(
     mmseqs: MMSeqs,
@@ -275,7 +424,7 @@ def main(argv: typing.Optional[typing.List[str]] = None) -> int:
     parser = build_parser()
     if not isinstance(argcomplete, ImportError):
         argcomplete.autocomplete(parser)
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
 
     with contextlib.ExitStack() as ctx:
         # open temporary folder
@@ -303,10 +452,26 @@ def main(argv: typing.Optional[typing.List[str]] = None) -> int:
             progress.console.print(f"[bold red]{'Failed':>12}[/] to locate MMseqs2 binary")
             return errno.ENOENT
 
+        # create appropriate dataset handler
+        dataset = create_dataset(
+            progress, 
+            args.input, 
+            args.defense_finder_downstream,
+            defense_metadata=getattr(args, 'defense_metadata', None),
+            defense_systems_tsv=getattr(args, 'defense_systems_tsv', None),
+            defense_genes_tsv=getattr(args, 'defense_genes_tsv', None),
+            gff_file=getattr(args, 'gff_file', None),
+            genome_file=getattr(args, 'genome_file', None),
+            protein_file=getattr(args, 'protein_file', None),  # Add protein file
+            gene_file=getattr(args, 'gene_file', None),        # Add gene file
+            write_defense_systems=getattr(args, 'write_defense_systems', None)
+        )
+        # print(dataset)
+
         # extract raw sequences
         clusters_fna = workdir.joinpath("clusters.fna")
         progress.console.print(f"[bold blue]{'Loading':>12}[/] input clusters")
-        input_sequences = extract_sequences(progress, args.input, clusters_fna)
+        input_sequences = dataset.extract_sequences(progress, args.input, clusters_fna)
         progress.console.print(
             f"[bold green]{'Loaded':>12}[/] {len(input_sequences)} clusters to process"
         )
@@ -351,9 +516,11 @@ def main(argv: typing.Optional[typing.List[str]] = None) -> int:
             progress.console.print(
                 f"[bold blue]{'Extracting':>12}[/] protein sequences from clusters"
             )
-            protein_sizes = extract_proteins(
+            # fix extract proteins to subset using representatives i.e. unique ntd representative 
+            protein_sizes = dataset.extract_proteins(
                 progress, args.input, proteins_faa, representatives
             )
+
 
             # cluster proteins
             prot_db = Database.create(mmseqs, proteins_faa)
@@ -361,9 +528,16 @@ def main(argv: typing.Optional[typing.List[str]] = None) -> int:
             prot_clusters = prot_result.to_dataframe(columns=["protein_representative", "protein_id"])
 
             # extract protein representatives
-            prot_clusters["cluster_id"] = (
-                prot_clusters["protein_id"].str.rsplit("_", n=1).str[0]
-            )
+            if args.defense_finder_downstream:
+                prot_clusters["cluster_id"] = prot_clusters["protein_id"]
+            elif args.defense_metadata: 
+                prot_clusters["cluster_id"] = (
+                    prot_clusters["protein_id"].str.rsplit("__", n=1).str[0]
+                )
+            else: 
+                prot_clusters["cluster_id"] = (
+                    prot_clusters["protein_id"].str.rsplit("_", n=1).str[0]
+                )
             protein_representatives = {
                 x: i
                 for i, x in enumerate(
@@ -492,6 +666,5 @@ def main(argv: typing.Optional[typing.List[str]] = None) -> int:
             progress.console.print(
                 f"[bold green]{'Saved':>12}[/] protein features to {str(args.features)!r}"
             )
-
 
     return 0
