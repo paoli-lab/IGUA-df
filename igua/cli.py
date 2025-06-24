@@ -360,91 +360,19 @@ def make_compositions(
     representatives: typing.Dict[str, int],
     protein_representatives: typing.Dict[str, int],
     protein_sizes: typing.Dict[str, int],
-) -> anndata.AnnData:
-    """
-    Create a composition matrix from protein clusters.
-    Compatible with both standard IGUA and DefenseFinder data formats.
-    """
+) -> anndata.AnnData: #scipy.sparse.csr_matrix:
     compositions = scipy.sparse.dok_matrix(
         (len(representatives), len(protein_representatives)), dtype=numpy.int32
     )
 
-    # Create a copy to avoid modifying the original DataFrame
-    clusters = protein_clusters.copy()
-    
-    # Add compatibility column for cluster ID lookups
-    if "cluster_id" in clusters.columns and len(set(clusters["cluster_id"]) & set(representatives.keys())) < len(clusters["cluster_id"].unique()):
-        progress.console.print(
-            f"[bold blue]{'Adding':>12}[/] compatibility mapping for cluster IDs"
-        )
-        # For DefenseFinder IDs, extract the base ID without strain prefix if needed
-        clusters["compat_id"] = clusters["cluster_id"].apply(
-            lambda x: x.split('_')[-1] if '_' in x and x not in representatives else x
-        )
-        lookup_column = "compat_id"
-    else:
-        # Use the original column if it's compatible
-        lookup_column = "cluster_id"
-    
-    # Add compatibility for protein representatives too
-    valid_protein_reps = set(protein_representatives.keys())
-    if len(set(clusters["protein_representative"]) & valid_protein_reps) < len(clusters["protein_representative"].unique()):
-        progress.console.print(
-            f"[bold blue]{'Adding':>12}[/] compatibility mapping for protein IDs"
-        )
-        # Create a mapping function for protein IDs
-        def normalize_protein_id(x):
-            if x in valid_protein_reps:
-                return x
-            # Try different transformations
-            # 1. Take last part after underscore (common pattern)
-            parts = x.split('_')
-            if len(parts) > 1 and parts[-1] in valid_protein_reps:
-                return parts[-1]
-            # 2. Try with just the ID part for DefenseFinder format
-            for valid_id in valid_protein_reps:
-                if valid_id in x:
-                    return valid_id
-            # No match found
-            return x
-        
-        clusters["compat_protein"] = clusters["protein_representative"].apply(normalize_protein_id)
-        protein_lookup_column = "compat_protein"
-    else:
-        protein_lookup_column = "protein_representative"
-    
-    # Get valid keys for lookups
-    valid_cluster_ids = set(representatives.keys())
-    
-    # Track statistics
-    total_rows = len(clusters)
-    skipped_rows = 0
-    
-    task = progress.add_task(description=f"[bold blue]{'Working':>9}[/]", total=total_rows)
-    for row in progress.track(clusters.itertuples(), task_id=task):
-        # Get the appropriate IDs for lookup
-        cluster_id = getattr(row, lookup_column)
-        protein_id = getattr(row, protein_lookup_column)
-        
-        # Skip invalid entries instead of raising KeyError
-        if cluster_id not in valid_cluster_ids or protein_id not in valid_protein_reps:
-            skipped_rows += 1
-            continue
-            
-        cluster_index = representatives[cluster_id]
-        prot_index = protein_representatives[protein_id]
-        
-        # Use get() with default value for protein_sizes
-        size = protein_sizes.get(protein_id, 1)
-        compositions[cluster_index, prot_index] += size
-    
+    task = progress.add_task(description=f"[bold blue]{'Working':>9}[/]", total=len(protein_clusters))
+    for row in progress.track(protein_clusters.itertuples(), task_id=task):
+        cluster_index = representatives[row.cluster_id]
+        prot_index = protein_representatives[row.protein_representative]
+        compositions[cluster_index, prot_index] += protein_sizes[
+            row.protein_representative
+        ]
     progress.remove_task(task)
-    
-    # Report statistics if rows were skipped
-    if skipped_rows > 0:
-        progress.console.print(
-            f"[bold yellow]{'Warning':>12}[/] Skipped {skipped_rows}/{total_rows} rows with invalid IDs"
-        )
 
     sorted_representatives = sorted(representatives, key=representatives.__getitem__)
     sorted_protein_representatives = sorted(protein_representatives, key=protein_representatives.__getitem__)
@@ -453,7 +381,7 @@ def make_compositions(
         obs=pandas.DataFrame(index=pandas.Index(sorted_representatives, name="cluster_id")),
         var=pandas.DataFrame(
             index=pandas.Index(sorted_protein_representatives, name="protein_id"),
-            data=dict(size=[protein_sizes.get(x, 1) for x in sorted_protein_representatives]),
+            data=dict(size=[protein_sizes[x] for x in sorted_protein_representatives]),
         )
     )
 
@@ -588,7 +516,7 @@ def main(argv: typing.Optional[typing.List[str]] = None) -> int:
             progress.console.print(
                 f"[bold blue]{'Extracting':>12}[/] protein sequences from clusters"
             )
-            # fix extract poteins to subset using representatives i.e. unique ntd representative 
+            # fix extract proteins to subset using representatives i.e. unique ntd representative 
             protein_sizes = dataset.extract_proteins(
                 progress, args.input, proteins_faa, representatives
             )
@@ -601,8 +529,10 @@ def main(argv: typing.Optional[typing.List[str]] = None) -> int:
 
             # extract protein representatives
             if args.defense_finder_downstream:
+                prot_clusters["cluster_id"] = prot_clusters["protein_id"]
+            elif args.defense_metadata: 
                 prot_clusters["cluster_id"] = (
-                    prot_clusters["protein_id"]
+                    prot_clusters["protein_id"].str.rsplit("__", n=1).str[0]
                 )
             else: 
                 prot_clusters["cluster_id"] = (

@@ -521,7 +521,7 @@ class DefenseExtractor:
                     protein_id = self._extract_protein_id(seq_id, hit_ids)
                     
                     # Create modified ID with system
-                    modified_id = f"{system_id}_{protein_id}"
+                    modified_id = f"{system_id}__{protein_id}"
                     modified_desc = f"{modified_id} [system={system_id}]"
                     
                     # Store in results

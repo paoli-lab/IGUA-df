@@ -573,15 +573,15 @@ class DefenseFinderDataset(BaseDataset):
                 write_output=self.write_output
             )
         
-        # Filter to representatives if provided
-        if representatives:
-            rep_set = set(str(r) for r in representatives)
-            # Try to match on system_id first
-            if "system_id" in df.columns:
-                df = df[df["system_id"].astype(str).isin(rep_set)]
-            # Then try sys_id
-            elif "sys_id" in df.columns:
-                df = df[df["sys_id"].astype(str).isin(rep_set)]
+        # # Filter to representatives if provided
+        # if representatives:
+        #     rep_set = set(str(r) for r in representatives)
+        #     # Try to match on system_id first
+        #     if "system_id" in df.columns:
+        #         df = df[df["system_id"].astype(str).isin(rep_set)]
+        #     # Then try sys_id
+        #     elif "sys_id" in df.columns:
+        #         df = df[df["sys_id"].astype(str).isin(rep_set)]
         
         # Process each row in DataFrame
         protein_sizes = {}
@@ -635,7 +635,7 @@ class DefenseFinderDataset(BaseDataset):
                     
                     # Write proteins
                     for prot_id, protein in system.get("proteins", {}).items():
-                        seq_id = f"{full_sys_id}_{prot_id}"
+                        seq_id = f"{full_sys_id}__{prot_id}"
                         sequence = protein["sequence"]
                         
                         # Write to output
