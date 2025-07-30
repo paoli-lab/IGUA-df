@@ -180,7 +180,6 @@ class GenBankDataset(BaseDataset):
 
 
 
-# Update the DefenseFinderDataset class
 class DefenseFinderDataset(BaseDataset):
     """DefenseFinder dataset class.
     This class is used to extract nucleotide and protein sequences from DefenseFinder output files.
@@ -192,8 +191,11 @@ class DefenseFinderDataset(BaseDataset):
         self.defense_genes_tsv = None  # pathlib.Path to DefenseFinder genes TSV
         self.gff_file = None  # pathlib.Path to GFF file
         self.genome_file = None  # pathlib.Path to genome FASTA file
+        self.protein_file = None  # pathlib.Path to protein FASTA file
+        self.gene_file = None  # pathlib.Path to gene nucleotide FASTA file
         self.write_output = False  # Whether to write output files
         self.output_dir = None  # Output directory for files
+        self.is_single_file_mode = False  # Flag for individual file mode
     
     def extract_sequences(
         self,
@@ -215,51 +217,7 @@ class DefenseFinderDataset(BaseDataset):
         if self._check_defense_finder_integration_mode():
             return self._process_with_defense_extractor(progress, output)
         
-        # Handle TSV summary file
-        if len(inputs) == 1 and inputs[0].suffix.lower() == ".tsv":
-            progress.console.print(f"[bold blue]{'Found':>12}[/] TSV summary file")
-            try:
-                df = pandas.read_csv(inputs[0], sep="\t")
-                
-                # Check if we have all required columns for advanced processing
-                required_cols = ["systems_tsv", "genes_tsv", "gff_file", "fasta_file"]
-                if all(col in df.columns for col in required_cols):
-                    # Use defense_extractor for processing
-                    return self._process_defense_files_from_tsv(progress, df, output)
-                
-                # First check for fasta_file column (genome sequences)
-                if "fasta_file" in df.columns:
-                    fa_files = [pathlib.Path(f) for f in df["fasta_file"] if f]
-                    progress.console.print(f"[bold blue]{'Using':>12}[/] fasta_file column with {len(fa_files)} files")
-                    return self._process_fa_files(progress, fa_files, output)
-                # Fall back to genomic_file for backward compatibility
-                elif "genomic_file" in df.columns:
-                    fa_files = [pathlib.Path(f) for f in df["genomic_file"] if f]
-                    progress.console.print(f"[bold blue]{'Using':>12}[/] genomic_file column with {len(fa_files)} files")
-                    return self._process_fa_files(progress, fa_files, output)
-                else:
-                    progress.console.print(
-                        f"[bold yellow]{'Warning':>12}[/] TSV missing required columns"
-                    )
-            except Exception as e:
-                progress.console.print(f"[bold red]{'Error':>12}[/] reading TSV: {e}")
 
-
-        # Handle directory with FASTA files
-        elif len(inputs) == 1 and inputs[0].is_dir():
-            fa_files = list(inputs[0].glob("**/*.fna"))
-            progress.console.print(f"[bold blue]{'Found':>12}[/] {len(fa_files)} FASTA files")
-            return self._process_fa_files(progress, fa_files, output)
-            
-        # Handle direct list of FASTA files
-        elif all(f.suffix.lower() in (".fa", ".fna", ".fasta") for f in inputs):
-            progress.console.print(f"[bold blue]{'Found':>12}[/] {len(inputs)} FASTA files")
-            return self._process_fa_files(progress, inputs, output)
-            
-        # Return empty DataFrame if no valid input
-        progress.console.print(f"[bold red]{'Error':>12}[/] No valid input files")
-        return pandas.DataFrame(columns=["cluster_id", "cluster_length", "filename"]).set_index("cluster_id")
-    
     def _check_defense_finder_integration_mode(self) -> bool:
         """Check if we're in direct DefenseFinder integration mode."""
         # Check if direct DefenseFinder mode is enabled
@@ -305,36 +263,91 @@ class DefenseFinderDataset(BaseDataset):
             
             # Use individual files
             progress.console.print(f"[bold blue]{'Using':>12}[/] direct defense finder files")
+
+            # Check if we need protein sequences for clustering
+            if self.protein_file and self.defense_systems_tsv and self.defense_genes_tsv:
+                progress.console.print(f"[bold blue]{'Mode':>12}[/] protein sequence extraction for clustering")
+                
+                # Determine nucleotide file to use
+                fna_file = self.gene_file if self.gene_file else self.genome_file
+                if not fna_file:
+                    progress.console.print(f"[bold red]{'Error':>12}[/] No nucleotide file available")
+                    return pandas.DataFrame(columns=["cluster_id", "cluster_length", "filename"]).set_index("cluster_id")
+                
+                # Extract protein sequences using extract_gene_sequences
+                gene_sequences = extractor.extract_gene_sequences(
+                    systems_tsv_file=self.defense_systems_tsv,
+                    genes_tsv_file=self.defense_genes_tsv,
+                    faa_file=self.protein_file,
+                    fna_file=fna_file,
+                    output_dir=output_dir if self.write_output else None
+                )
+                
+                # Write protein sequences to output file and create DataFrame
+                data = []
+                with open(output, "w") as dst:
+                    for sys_id, system in gene_sequences.items():
+                        # Extract protein sequences for each gene in the system
+                        protein_sequences = system.get("proteins", {})
+                        
+                        if protein_sequences:
+                            # Concatenate all protein sequences in the system 
+                            combined_sequence = "".join(
+                                prot_data["sequence"] for prot_data in protein_sequences.values()
+                            )
+                            length = len(combined_sequence)
+                            
+                            # Write to FASTA file
+                            self.write_fasta(dst, sys_id, combined_sequence)
+                            
+                            # Record for DataFrame
+                            file_path = str(self.protein_file)
+                            data.append((sys_id, length, file_path))
+                        else:
+                            progress.console.print(f"[yellow]{'Warning':>12}[/] No proteins found for system {sys_id}")
+                
+                # Create and return DataFrame
+                progress.console.print(f"[bold green]{'Extracted':>12}[/] {len(data)} protein systems")
+                return pandas.DataFrame(
+                    data=data,
+                    columns=["cluster_id", "cluster_length", "filename"]
+                ).set_index("cluster_id")
             
-            # Extract systems
-            systems = extractor.extract_systems(
-                systems_tsv_file=self.defense_systems_tsv,
-                genes_tsv_file=self.defense_genes_tsv,
-                gff_file=self.gff_file,
-                fasta_file=self.genome_file,
-                output_dir=output_dir if self.write_output else None
-            )
+            elif self.defense_systems_tsv and self.defense_genes_tsv and self.gff_file and self.genome_file:
+                # Extract genomic sequences (original behavior)
+                # Extract systems
+                systems = extractor.extract_systems(
+                    systems_tsv_file=self.defense_systems_tsv,
+                    genes_tsv_file=self.defense_genes_tsv,
+                    gff_file=self.gff_file,
+                    fasta_file=self.genome_file,
+                    output_dir=output_dir if self.write_output else None
+                )
+                
+                # Write sequences to output file and create DataFrame
+                data = []
+                with open(output, "w") as dst:
+                    for sys_id, system in systems.items():
+                        sequence = system["sequence"]
+                        length = system["length"]
+                        
+                        # Write to FASTA file
+                        self.write_fasta(dst, sys_id, sequence)
+                        
+                        # Record for DataFrame
+                        file_path = system.get("file_path", str(self.genome_file))
+                        data.append((sys_id, length, file_path))
+                
+                # Create and return DataFrame
+                progress.console.print(f"[bold green]{'Extracted':>12}[/] {len(data)} systems")
+                return pandas.DataFrame(
+                    data=data,
+                    columns=["cluster_id", "cluster_length", "filename"]
+                ).set_index("cluster_id")
             
-            # Write sequences to output file and create DataFrame
-            data = []
-            with open(output, "w") as dst:
-                for sys_id, system in systems.items():
-                    sequence = system["sequence"]
-                    length = system["length"]
-                    
-                    # Write to FASTA file
-                    self.write_fasta(dst, sys_id, sequence)
-                    
-                    # Record for DataFrame
-                    file_path = system.get("file_path", str(self.genome_file))
-                    data.append((sys_id, length, file_path))
-            
-            # Create and return DataFrame
-            progress.console.print(f"[bold green]{'Extracted':>12}[/] {len(data)} systems")
-            return pandas.DataFrame(
-                data=data,
-                columns=["cluster_id", "cluster_length", "filename"]
-            ).set_index("cluster_id")
+            else:
+                progress.console.print(f"[bold red]{'Error':>12}[/] Missing required files for individual mode")
+                return pandas.DataFrame(columns=["cluster_id", "cluster_length", "filename"]).set_index("cluster_id")
             
         finally:
             # Clean up temporary directory if created
@@ -522,8 +535,8 @@ class DefenseFinderDataset(BaseDataset):
             gene_data = extractor.extract_gene_sequences(
                 systems_tsv_file=self.defense_systems_tsv,
                 genes_tsv_file=self.defense_genes_tsv,
-                faa_file=self.defense_systems_tsv.parent / "proteins.faa",
-                fna_file=self.defense_systems_tsv.parent / "genes.fna",
+                    faa_file=self.protein_file,
+                    fna_file=None,
                 output_dir=output_dir if self.write_output else None
             )
             

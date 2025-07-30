@@ -108,7 +108,7 @@ def build_parser() -> argparse.ArgumentParser:
         action="append",
         type=pathlib.Path,
         default=[],
-        required=True,
+        required=False,
     )
 
     group_output = parser.add_argument_group(
@@ -198,7 +198,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     group_defense.add_argument(
         "--defense-systems-tsv",
-        help="Path to DefenseFinder systems TSV file (requires --defense-genes-tsv, --gff, --genome)",
+        help="Path to DefenseFinder systems TSV file (requires --defense-genes-tsv, --gff, --genome, --protein-file)",
         type=pathlib.Path,
     )
     group_defense.add_argument(
@@ -218,12 +218,12 @@ def build_parser() -> argparse.ArgumentParser:
     )
     group_defense.add_argument(
         "--protein-file",
-        help="Path to protein FASTA file (.faa)",
+        help="Path to protein FASTA file (.faa) - REQUIRED for individual file mode",
         type=pathlib.Path,
     )
     group_defense.add_argument(
         "--gene-file",
-        help="Path to gene nucleotide FASTA file (.fna)",
+        help="Path to gene nucleotide FASTA file (.fna) - optional",
         type=pathlib.Path,
     )
     group_defense.add_argument(
@@ -251,9 +251,20 @@ def create_dataset(
         raise ValueError("No input files provided")
     
     # Case 1: Individual DefenseFinder files provided via command line arguments
-    if defense_systems_tsv and defense_genes_tsv and gff_file and genome_file:
+    if defense_systems_tsv and defense_genes_tsv and gff_file and genome_file and protein_file:
+
         progress.console.print(f"[bold blue]{'Using':>12}[/] individual DefenseFinder files")
+        progress.console.print(f"[cyan]{'Files':>12}[/] Systems: {defense_systems_tsv.name}")
+        progress.console.print(f"[cyan]{'':>12}[/] Genes: {defense_genes_tsv.name}")
+        progress.console.print(f"[cyan]{'':>12}[/] GFF: {gff_file.name}")
+        progress.console.print(f"[cyan]{'':>12}[/] Genome: {genome_file.name}")
+        progress.console.print(f"[cyan]{'':>12}[/] Proteins: {protein_file.name}")
+        if gene_file:
+            progress.console.print(f"[cyan]{'':>12}[/] Genes: {gene_file.name}")
+        
         dataset = DefenseFinderDataset()
+        
+        # Set up as individual file mode 
         dataset.defense_systems_tsv = defense_systems_tsv
         dataset.defense_genes_tsv = defense_genes_tsv
         dataset.gff_file = gff_file
@@ -262,6 +273,11 @@ def create_dataset(
         dataset.gene_file = gene_file
         dataset.write_output = write_defense_systems is not None
         dataset.output_dir = write_defense_systems
+        
+        # Create a virtual single-row metadata for consistency
+        dataset.is_single_file_mode = True
+        dataset.defense_metadata = None
+        
         return dataset
     
     # Case 2: Check if input files contain DefenseFinder metadata TSV
@@ -271,32 +287,25 @@ def create_dataset(
                 # Check first few lines of TSV for DefenseFinder metadata columns
                 with open(input_file, "r") as f:
                     header = f.readline().strip().split("\t")
+                    progress.console.print(f"[cyan]{'Debug':>12}[/] Found TSV headers: {header}")
                     
                     # DefenseFinder metadata format (new method)
-                    metadata_cols = ["defense_systems_tsv", "defense_genes_tsv", "gff_file", "genome_file", "fasta_file"]
-                    alt_metadata_cols = ["systems_tsv", "genes_tsv", "gff_file", "fasta_file"]
-                    
-                    if any(col in header for col in metadata_cols + alt_metadata_cols):
+                    metadata_cols = ["systems_tsv", "genes_tsv", "gff_file", "fasta_file"]
+
+                    has_new_format = all(col in header for col in metadata_cols)
+
+                    if has_new_format:
                         progress.console.print(f"[bold blue]{'Detected':>12}[/] DefenseFinder metadata TSV format")
                         dataset = DefenseFinderDataset()
                         dataset.defense_metadata = input_file
                         dataset.write_output = write_defense_systems is not None
                         dataset.output_dir = write_defense_systems
-                        return dataset
-                    
-                    # Legacy DefenseFinder format
-                    legacy_cols = ["fna_file", "faa_file", "system_id", "sys_id"]
-                    if any(col in header for col in legacy_cols):
-                        progress.console.print(f"[bold blue]{'Detected':>12}[/] DefenseFinder legacy TSV format")
-                        dataset = DefenseFinderDataset()
-                        dataset.defense_metadata = input_file
-                        dataset.write_output = write_defense_systems is not None
-                        dataset.output_dir = write_defense_systems
+                        dataset.is_single_file_mode = False
                         return dataset
                     
                     # If it's a TSV but doesn't match DefenseFinder format, show what we found
                     progress.console.print(f"[yellow]{'Warning':>12}[/] TSV file found but header doesn't match DefenseFinder format")
-                    progress.console.print(f"[yellow]{'Found':>12}[/] columns: {', '.join(header[:5])}...")
+                    progress.console.print(f"[yellow]{'Found':>12}[/] columns: {', '.join(header)}")
                     
             except Exception as e:
                 progress.console.print(f"[yellow]{'Warning':>12}[/] Error reading TSV file {input_file}: {e}")
@@ -328,14 +337,12 @@ def create_dataset(
         progress.console.print(f"[bold red]{'Error':>12}[/] TSV files found but none match DefenseFinder format:")
         for tsv_file in tsv_files:
             progress.console.print(f"[red]{'':>12}[/] {tsv_file}")
-        progress.console.print(f"[yellow]{'Expected':>12}[/] columns for DefenseFinder metadata:")
-        progress.console.print(f"[yellow]{'':>12}[/] - defense_systems_tsv, defense_genes_tsv, gff_file, genome_file")
-        progress.console.print(f"[yellow]{'':>12}[/] - OR systems_tsv, genes_tsv, gff_file, fasta_file")
-        progress.console.print(f"[yellow]{'':>12}[/] - OR fna_file, faa_file, system_id, sys_id (legacy)")
+        progress.console.print(f"[yellow]{'Expected':>12}[/] Required columns for DefenseFinder metadata:")
+        progress.console.print(f"[yellow]{'Format 2':>12}[/] systems_tsv, genes_tsv, gff_file, fasta_file, fa_file")
         
         raise TypeError(
             f"TSV files found but none match DefenseFinder metadata format. "
-            f"Please check that your TSV file has the correct column headers."
+            f"Please check that your TSV file has the required column headers."
         )
     
     if unsupported_files:
@@ -427,13 +434,40 @@ def compute_distances(
     # check distances are in [0, 1]
     return numpy.clip(distance_vector, 0.0, 1.0, out=distance_vector)
 
-
 def main(argv: typing.Optional[typing.List[str]] = None) -> int:
     # build parser and get arguments
     parser = build_parser()
     if not isinstance(argcomplete, ImportError):
         argcomplete.autocomplete(parser)
     args = parser.parse_args(argv)
+
+    # Validate individual DefenseFinder file arguments
+    individual_args = [
+        args.defense_systems_tsv, 
+        args.defense_genes_tsv, 
+        args.gff, 
+        args.genome,
+        args.protein_file,
+    ]
+    
+    # Check if we're in individual file mode
+    using_individual_files = any(individual_args)
+    
+    if using_individual_files:
+        # Individual file mode - require all DefenseFinder arguments
+        if not all(individual_args):
+            parser.error(
+                "Individual DefenseFinder mode requires ALL of: "
+                "--defense-systems-tsv, --defense-genes-tsv, --gff, --genome, --protein-file"
+            )
+                  
+        # For individual mode, input files are not required
+        if not args.input:
+            args.input = []
+    else:
+        # Metadata/traditional mode - require input files
+        if not args.input:
+            parser.error("Input files (-i/--input) are required when not using individual DefenseFinder files")
 
     with contextlib.ExitStack() as ctx:
         # open temporary folder
@@ -477,7 +511,13 @@ def main(argv: typing.Optional[typing.List[str]] = None) -> int:
         # extract raw sequences
         clusters_fna = workdir.joinpath("clusters.fna")
         progress.console.print(f"[bold blue]{'Loading':>12}[/] input clusters")
-        input_sequences = dataset.extract_sequences(progress, args.input, clusters_fna)
+        
+        # For individual file mode, pass empty list as input_files
+        if using_individual_files:
+            input_sequences = dataset.extract_sequences(progress, [], clusters_fna)
+        else:
+            input_sequences = dataset.extract_sequences(progress, args.input, clusters_fna)
+            
         progress.console.print(
             f"[bold green]{'Loaded':>12}[/] {len(input_sequences)} clusters to process"
         )
@@ -488,7 +528,7 @@ def main(argv: typing.Optional[typing.List[str]] = None) -> int:
         )
         db = Database.create(mmseqs, clusters_fna)
         step1 = db.cluster(workdir / "step1.db", **_PARAMS_NUC1)
-        gcfs1 = step1.to_dataframe(columns=["fragment_representative", "cluster_id"]).sort_values("cluster_id")
+        gcfs1 = step1.to_dataframe(columns=["fragment_representative", "cluster_id"]).sort_values("cluster_id") # type: ignore
         progress.console.print(
             f"[bold green]{'Reduced':>12}[/] {len(gcfs1)} clusters to {len(gcfs1.fragment_representative.unique())} complete representatives"
         )
@@ -499,7 +539,7 @@ def main(argv: typing.Optional[typing.List[str]] = None) -> int:
         )
         repdb = step1.to_subdb(workdir / "step1.rep_seq.db")
         step2 = repdb.cluster(workdir / "step2.db", **_PARAMS_NUC2)
-        gcfs2 = step2.to_dataframe(columns=["nucleotide_representative", "fragment_representative"]).sort_values("fragment_representative")
+        gcfs2 = step2.to_dataframe(columns=["nucleotide_representative", "fragment_representative"]).sort_values("fragment_representative") # type: ignore
         progress.console.print(
             f"[bold green]{'Reduced':>12}[/] {len(gcfs2)} clusters to {len(gcfs2.nucleotide_representative.unique())} nucleotide representatives"
         )
@@ -525,69 +565,109 @@ def main(argv: typing.Optional[typing.List[str]] = None) -> int:
             progress.console.print(
                 f"[bold blue]{'Extracting':>12}[/] protein sequences from clusters"
             )
-            protein_sizes = dataset.extract_proteins(
-                progress, args.input, proteins_faa, representatives
-            )
-
-            # cluster proteins
-            prot_db = Database.create(mmseqs, proteins_faa)
-            prot_result = prot_db.cluster(workdir / "step3.db", **_PARAMS_PROT)
-            prot_clusters = prot_result.to_dataframe(columns=["protein_representative", "protein_id"])
-
-            # extract protein representatives - determine cluster_id based on dataset type
+            
+            # For DefenseFinder datasets, we need to handle protein extraction differently
             if is_defense_finder:
-                if hasattr(dataset, 'defense_metadata') and dataset.defense_metadata:
-                    # Metadata format: use double underscore delimiter
-                    prot_clusters["cluster_id"] = (
-                        prot_clusters["protein_id"].str.rsplit("__", n=1).str[0]
+                # Check if proteins.faa file exists and is not empty before proceeding
+                try:
+                    protein_sizes = dataset.extract_proteins(
+                        progress, args.input, proteins_faa, representatives
                     )
-                else:
-                    # Individual files format: protein_id IS the cluster_id
-                    prot_clusters["cluster_id"] = prot_clusters["protein_id"]
+                    
+                    # Verify the file was created and is not empty
+                    if not proteins_faa.exists() or proteins_faa.stat().st_size == 0:
+                        progress.console.print(f"[bold yellow]{'Warning':>12}[/] No proteins extracted from defense systems")
+                        progress.console.print(f"[bold yellow]{'Skipping':>12}[/] protein clustering due to empty protein file")
+                        # Skip protein clustering and proceed with nucleotide-only clustering
+                        args.clustering = False
+                    else:
+                        progress.console.print(f"[bold green]{'Extracted':>12}[/] proteins to {proteins_faa} ({proteins_faa.stat().st_size} bytes)")
+                        
+                except Exception as e:
+                    progress.console.print(f"[bold red]{'Error':>12}[/] Failed to extract proteins: {e}")
+                    progress.console.print(f"[bold yellow]{'Skipping':>12}[/] protein clustering due to extraction failure")
+                    args.clustering = False
             else:
-                # Traditional format: use single underscore delimiter
-                prot_clusters["cluster_id"] = (
-                    prot_clusters["protein_id"].str.rsplit("_", n=1).str[0]
+                # Traditional datasets
+                protein_sizes = dataset.extract_proteins(
+                    progress, args.input, proteins_faa, representatives
                 )
 
-            protein_representatives = {
-                x: i
-                for i, x in enumerate(
-                    sorted(prot_clusters["protein_representative"].unique())
-                )
-            }
-            progress.console.print(
-                f"[bold green]{'Found':>12}[/] {len(protein_representatives)} protein representatives for {len(prot_clusters)} proteins"
-            )
+            # Only proceed with protein clustering if we have a valid protein file
+            if args.clustering and proteins_faa.exists() and proteins_faa.stat().st_size > 0:
+                # cluster proteins
+                prot_db = Database.create(mmseqs, proteins_faa)
+                prot_result = prot_db.cluster(workdir / "step3.db", **_PARAMS_PROT)
+                prot_clusters = prot_result.to_dataframe(columns=["protein_representative", "protein_id"])
 
-            # build weighted compositional array
-            progress.console.print(
-                f"[bold blue]{'Building':>12}[/] weighted compositional array"
-            )
-            compositions = make_compositions(
-                progress, prot_clusters, representatives, protein_representatives, protein_sizes
-            )
+                # extract protein representatives - determine cluster_id based on dataset type
+                if is_defense_finder:
+                    # Check if this is single file mode or metadata mode
+                    if hasattr(dataset, 'is_single_file_mode') and dataset.is_single_file_mode:
+                        # Single file mode: protein_id IS the cluster_id (like individual files)
+                        prot_clusters["cluster_id"] = prot_clusters["protein_id"]
+                    elif hasattr(dataset, 'defense_metadata') and dataset.defense_metadata:
+                        # Metadata mode: use double underscore delimiter
+                        prot_clusters["cluster_id"] = (
+                            prot_clusters["protein_id"].str.rsplit("__", n=1).str[0]
+                        )
+                    else:
+                        # Fallback: treat as individual files format
+                        prot_clusters["cluster_id"] = prot_clusters["protein_id"]
+                else:
+                    # Traditional format: use single underscore delimiter
+                    prot_clusters["cluster_id"] = (
+                        prot_clusters["protein_id"].str.rsplit("_", n=1).str[0]
+                    )
 
-            # compute and ponderate distances
-            progress.console.print(
-                f"[bold blue]{'Computing':>12}[/] pairwise distance based on protein composition"
-            )
-            distance_vector = compute_distances(progress, compositions.X, args.jobs, args.precision)
-
-            # run hierarchical clustering
-            progress.console.print(
-                f"[bold blue]{'Clustering':>12}[/] gene clusters using {args.clustering_method} linkage"
-            )
-            Z = linkage(distance_vector, method=args.clustering_method)
-            flat = fcluster(Z, criterion="distance", t=args.clustering_distance)
-
-            # build GCFs based on flat clustering
-            gcfs3 = pandas.DataFrame(
-                {
-                    "gcf_id": [f"{args.prefix}{i:07}" for i in flat],
-                    "nucleotide_representative": compositions.obs_names,
+                protein_representatives = {
+                    x: i
+                    for i, x in enumerate(
+                        sorted(prot_clusters["protein_representative"].unique())
+                    )
                 }
-            )
+                progress.console.print(
+                    f"[bold green]{'Found':>12}[/] {len(protein_representatives)} protein representatives for {len(prot_clusters)} proteins"
+                )
+
+                # build weighted compositional array
+                progress.console.print(
+                    f"[bold blue]{'Building':>12}[/] weighted compositional array"
+                )
+                compositions = make_compositions(
+                    progress, prot_clusters, representatives, protein_representatives, protein_sizes
+                )
+
+                # compute and ponderate distances
+                progress.console.print(
+                    f"[bold blue]{'Computing':>12}[/] pairwise distance based on protein composition"
+                )
+                distance_vector = compute_distances(progress, compositions.X, args.jobs, args.precision)
+
+                # run hierarchical clustering
+                progress.console.print(
+                    f"[bold blue]{'Clustering':>12}[/] gene clusters using {args.clustering_method} linkage"
+                )
+                Z = linkage(distance_vector, method=args.clustering_method)
+                flat = fcluster(Z, criterion="distance", t=args.clustering_distance)
+
+                # build GCFs based on flat clustering
+                gcfs3 = pandas.DataFrame(
+                    {
+                        "gcf_id": [f"{args.prefix}{i:07}" for i in flat],
+                        "nucleotide_representative": compositions.obs_names,
+                    }
+                )
+            else:
+                # Fallback to nucleotide-only clustering
+                progress.console.print(f"[bold yellow]{'Using':>12}[/] nucleotide-only clustering (no proteins available)")
+                sorted_representatives = sorted(representatives, key=representatives.__getitem__)
+                gcfs3 = pandas.DataFrame(
+                    {
+                        "gcf_id": [f"{args.prefix}{i+1:07}" for i in range(len(sorted_representatives))],
+                        "nucleotide_representative": sorted_representatives,
+                    }
+                )
         else:
             sorted_representatives = sorted(representatives, key=representatives.__getitem__)
             gcfs3 = pandas.DataFrame(
@@ -596,6 +676,7 @@ def main(argv: typing.Optional[typing.List[str]] = None) -> int:
                     "nucleotide_representative": sorted_representatives,
                 }
             )
+
 
         progress.console.print(
             f"[bold green]{'Built':>12}[/] {len(gcfs3.gcf_id.unique())} GCFs from {len(input_sequences)} initial clusters"

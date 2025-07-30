@@ -45,7 +45,7 @@ class DefenseExtractor:
         strain_id: Optional[str] = None,
     ) -> Dict[str, Dict[str, Any]]:
         """
-        Extract defense systems from genomic data
+        Extract defense systems' sequences from genomic data
         
         Args:
             systems_tsv_file: Path to DefenseFinder systems TSV
@@ -406,9 +406,19 @@ class DefenseExtractor:
                 return {}
                 
             # Create FASTA indices
+            faa_index = None
+            fna_index = None
             try:
-                faa_index = self._create_fasta_index(faa_file)
-                fna_index = self._create_fasta_index(fna_file)
+                if faa_file: 
+                    faa_index = self._create_fasta_index(faa_file)
+                if fna_file: 
+                    fna_index = self._create_fasta_index(fna_file)
+                    
+                # Check that at least one index was created
+                if faa_index is None and fna_index is None:
+                    self.console.print(f"[bold red]Error:[/] No valid FASTA files provided")
+                    return {}
+                    
             except Exception as e:
                 self._log_error(
                     "INDEX_ERROR", "Failed to create sequence indices", 
@@ -496,119 +506,133 @@ class DefenseExtractor:
         }
         
         try:
-            # Find matching sequences
-            faa_matching = [
-                seq_id for seq_id in faa_index if any(hit_id in seq_id for hit_id in hit_ids)
-            ]
+            # Find matching sequences - only process if index exists
+            faa_matching = []
+            fna_matching = []
             
-            fna_matching = [
-                seq_id for seq_id in fna_index if any(hit_id in seq_id for hit_id in hit_ids)
-            ]
+            if faa_index is not None:
+                faa_matching = [
+                    seq_id for seq_id in faa_index if any(hit_id in seq_id for hit_id in hit_ids)
+                ]
             
-            # Process protein sequences
+            if fna_index is not None:
+                fna_matching = [
+                    seq_id for seq_id in fna_index if any(hit_id in seq_id for hit_id in hit_ids)
+                ]
+            
+            # Process protein sequences only if faa_index exists
             faa_count = 0
-            faa_buffer = io.StringIO() if not self.write_output else None
-            
-            try:
-                # Open file for writing if needed
-                out_handle = open(faa_out, "w") if faa_out else faa_buffer
+            if faa_index is not None:
+                faa_buffer = io.StringIO() if not self.write_output else None
                 
-                for seq_id in faa_matching:
-                    # Get original record
-                    record = faa_index[seq_id]
+                try:
+                    # Open file for writing if needed
+                    out_handle = open(faa_out, "w") if faa_out else faa_buffer
                     
-                    # Extract protein ID from sequence ID
-                    protein_id = self._extract_protein_id(seq_id, hit_ids)
-                    
-                    # Create modified ID with system
-                    modified_id = f"{system_id}__{protein_id}"
-                    modified_desc = f"{modified_id} [system={system_id}]"
-                    
-                    # Store in results
-                    result["proteins"][protein_id] = {
-                        "sequence": str(record.seq),
-                        "length": len(record.seq),
-                        "system_id": system_id,
-                        "id": modified_id
-                    }
-                    
-                    # Write to file/buffer
-                    self._write_fasta(out_handle, modified_id, modified_desc, str(record.seq))
-                    faa_count += 1
-                    
-                # Close file if it was opened
-                if faa_out:
-                    out_handle.close()
-                else:
-                    # Store buffer content in result
-                    result["protein_fasta"] = faa_buffer.getvalue()
-                    faa_buffer.close()
-                    
-            except Exception as e:
-                self._log_error(
-                    "PROTEIN_WRITE_ERROR", f"Failed to process protein sequences for system {system_id}", 
-                    strain_id=strain_id, system_id=system_id, files=files_dict, exception=e
-                )
-                if progress:
-                    progress.console.print(f"[bold red]Error:[/] Failed to process protein sequences for {system_id}: {str(e)}")
+                    for seq_id in faa_matching:
+                        # Get original record
+                        record = faa_index[seq_id]
+                        
+                        # Extract protein ID from sequence ID
+                        protein_id = self._extract_protein_id(seq_id, hit_ids)
+                        
+                        # Create modified ID with system
+                        modified_id = f"{system_id}__{protein_id}"
+                        modified_desc = f"{modified_id} [system={system_id}]"
+                        
+                        # Store in results
+                        result["proteins"][protein_id] = {
+                            "sequence": str(record.seq),
+                            "length": len(record.seq),
+                            "system_id": system_id,
+                            "id": modified_id
+                        }
+                        
+                        # Write to file/buffer
+                        self._write_fasta(out_handle, modified_id, modified_desc, str(record.seq))
+                        faa_count += 1
+                        
+                    # Close file if it was opened
+                    if faa_out and out_handle:
+                        out_handle.close()
+                    elif faa_buffer:
+                        # Store buffer content in result
+                        result["protein_fasta"] = faa_buffer.getvalue()
+                        faa_buffer.close()
+                        
+                except Exception as e:
+                    self._log_error(
+                        "PROTEIN_WRITE_ERROR", f"Failed to process protein sequences for system {system_id}", 
+                        strain_id=strain_id, system_id=system_id, files=files_dict, exception=e
+                    )
+                    if progress:
+                        progress.console.print(f"[bold red]Error:[/] Failed to process protein sequences for {system_id}: {str(e)}")
             
-            # Process nucleotide sequences
+            # Process nucleotide sequences only if fna_index exists
             fna_count = 0
-            fna_buffer = io.StringIO() if not self.write_output else None
-            
-            try:
-                # Open file for writing if needed
-                out_handle = open(fna_out, "w") if fna_out else fna_buffer
+            if fna_index is not None:
+                fna_buffer = io.StringIO() if not self.write_output else None
                 
-                for seq_id in fna_matching:
-                    # Get original record
-                    record = fna_index[seq_id]
+                try:
+                    # Open file for writing if needed
+                    out_handle = open(fna_out, "w") if fna_out else fna_buffer
                     
-                    # Extract gene ID from sequence ID
-                    gene_id = self._extract_protein_id(seq_id, hit_ids)
-                    
-                    # Create modified ID with system
-                    modified_id = f"{system_id}_{gene_id}"
-                    modified_desc = f"{modified_id} [system={system_id}]"
-                    
-                    # Store in results
-                    result["nucleotides"][gene_id] = {
-                        "sequence": str(record.seq),
-                        "length": len(record.seq),
-                        "system_id": system_id,
-                        "id": modified_id
-                    }
-                    
-                    # Write to file/buffer
-                    self._write_fasta(out_handle, modified_id, modified_desc, str(record.seq))
-                    fna_count += 1
-                    
-                # Close file if it was opened
-                if fna_out:
-                    out_handle.close()
-                else:
-                    # Store buffer content in result
-                    result["nucleotide_fasta"] = fna_buffer.getvalue()
-                    fna_buffer.close()
-                    
-            except Exception as e:
-                self._log_error(
-                    "NUCLEOTIDE_WRITE_ERROR", f"Failed to process nucleotide sequences for system {system_id}", 
-                    strain_id=strain_id, system_id=system_id, files=files_dict, exception=e
-                )
-                if progress:
-                    progress.console.print(f"[bold red]Error:[/] Failed to process nucleotide sequences for {system_id}: {str(e)}")
+                    for seq_id in fna_matching:
+                        # Get original record
+                        record = fna_index[seq_id]
+                        
+                        # Extract gene ID from sequence ID
+                        gene_id = self._extract_protein_id(seq_id, hit_ids)
+                        
+                        # Create modified ID with system
+                        modified_id = f"{system_id}_{gene_id}"
+                        modified_desc = f"{modified_id} [system={system_id}]"
+                        
+                        # Store in results
+                        result["nucleotides"][gene_id] = {
+                            "sequence": str(record.seq),
+                            "length": len(record.seq),
+                            "system_id": system_id,
+                            "id": modified_id
+                        }
+                        
+                        # Write to file/buffer
+                        self._write_fasta(out_handle, modified_id, modified_desc, str(record.seq))
+                        fna_count += 1
+                        
+                    # Close file if it was opened
+                    if fna_out and out_handle:
+                        out_handle.close()
+                    elif fna_buffer:
+                        # Store buffer content in result
+                        result["nucleotide_fasta"] = fna_buffer.getvalue()
+                        fna_buffer.close()
+                        
+                except Exception as e:
+                    self._log_error(
+                        "NUCLEOTIDE_WRITE_ERROR", f"Failed to process nucleotide sequences for system {system_id}", 
+                        strain_id=strain_id, system_id=system_id, files=files_dict, exception=e
+                    )
+                    if progress:
+                        progress.console.print(f"[bold red]Error:[/] Failed to process nucleotide sequences for {system_id}: {str(e)}")
             
             # Add file paths to result if writing was enabled
             if self.write_output:
-                if faa_out:
+                if faa_out and faa_index is not None:
                     result["faa_file"] = faa_out
-                if fna_out:
+                if fna_out and fna_index is not None:
                     result["fna_file"] = fna_out
             
             # Report success
             if progress:
-                progress.console.print(f"[bold green]Extracted[/] {faa_count} proteins and {fna_count} nucleotides for {system_id}")
+                if faa_index is not None and fna_index is not None:
+                    progress.console.print(f"[bold green]Extracted[/] {faa_count} proteins and {fna_count} nucleotides for {system_id}")
+                elif faa_index is not None:
+                    progress.console.print(f"[bold green]Extracted[/] {faa_count} proteins for {system_id}")
+                elif fna_index is not None:
+                    progress.console.print(f"[bold green]Extracted[/] {fna_count} nucleotides for {system_id}")
+                else:
+                    progress.console.print(f"[bold yellow]Warning[/] No sequences extracted for {system_id}")
             
             return result
             
