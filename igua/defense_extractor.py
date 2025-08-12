@@ -11,6 +11,8 @@ import rich.progress
 from rich.console import Console
 
 # TODO: fix progress bar integration
+# TODO: deduplicate fna/faa sequence extraction 
+# TODO: check memory usage of extractor 
 
 
 class DefenseExtractor:
@@ -59,15 +61,14 @@ class DefenseExtractor:
         Returns:
             Dictionary mapping system_id to sequence data and metadata
         """
-        # Create output directory if needed and writing is enabled
         if self.write_output and output_dir:
             os.makedirs(output_dir, exist_ok=True)
         
-        # Set up database path
+        # set up database path
         db_path = ":memory:"
         unique_id = str(uuid.uuid4())
         
-        # Track files for error logging
+        # for error logging
         files_dict = {
             "systems_tsv": systems_tsv_file,
             "genes_tsv": genes_tsv_file,
@@ -78,7 +79,6 @@ class DefenseExtractor:
         if output_dir:
             files_dict["output_dir"] = output_dir
         
-        # Create progress tracking
         using_external_progress = self.progress is not None
         progress = self.progress or rich.progress.Progress(
             rich.progress.SpinnerColumn(),
@@ -87,7 +87,6 @@ class DefenseExtractor:
             rich.progress.TextColumn("[bold]{task.completed}/{task.total}")
         )
         
-        # Dictionary to store results
         results = {}
         
         try:
@@ -124,7 +123,7 @@ class DefenseExtractor:
                 return {}
             # progress.advance(task_setup)
             
-            # Set up GFF database with in-memory fallback
+            # set up GFF database with in-memory fallback
             # progress.update(task_setup, description="Creating GFF database")
             try:
                 if gff_cache_dir:
@@ -133,9 +132,8 @@ class DefenseExtractor:
                 else:
                     db_path = os.path.join(tempfile.gettempdir(), f"gff_temp_{unique_id}.db")
                     
-                # Convert pathlib.Path to string before passing to gffutils
                 db = gffutils.create_db(
-                    str(gff_file),  # Convert Path to string here
+                    str(gff_file),  
                     dbfn=db_path, 
                     force=True, 
                     merge_strategy='create_unique',
@@ -147,7 +145,7 @@ class DefenseExtractor:
                     strain_id=strain_id, files=files_dict, exception=e
                 )
                 self.console.print(f"[bold blue]{'Using':>12}[/] in-memory database")
-                db_path = ":memory:"  # Reset to in-memory in case of exception
+                db_path = ":memory:"  # reset to in-memory in case of exception
                 try:
                     db = gffutils.create_db(
                         str(gff_file),  # Convert Path to string here
@@ -165,7 +163,6 @@ class DefenseExtractor:
                 
             # progress.advance(task_setup)
             
-            # Process each system
             # task_systems = progress.add_task("[bold blue]Processing systems", total=len(systems_df))
             
             for _, system in systems_df.iterrows():
@@ -174,8 +171,7 @@ class DefenseExtractor:
                 
                 system_files = {**files_dict, "system_id": sys_id}
                     
-                # Get system genes
-                system_genes = genes_df[genes_df['sys_id'] == sys_id].sort_values('hit_pos')
+                system_genes = genes_df[genes_df['sys_id'] == sys_id].sort_values('hit_pos') 
                 if system_genes.empty:
                     self._log_error(
                         "NO_GENES_ERROR", "No genes found for system", 
@@ -185,9 +181,9 @@ class DefenseExtractor:
                     # progress.advance(task_systems)
                     continue
                 
-                # Get beginning and ending genes
+                # beginning and ending genes
                 try:
-                    # Directly access the start and end genes using 'sys_beg' and 'sys_end' from the system
+                    # directly access the start and end genes using 'sys_beg' and 'sys_end' from the systems tsv DefenseFinder output 
                     beg_gene_mask = system_genes['hit_id'] == system['sys_beg']
                     end_gene_mask = system_genes['hit_id'] == system['sys_end']
                     
@@ -205,15 +201,14 @@ class DefenseExtractor:
                         # progress.advance(task_systems)
                         continue
                     
-                    # Extract the hit IDs
                     beg_hit_id = system['sys_beg']
                     end_hit_id = system['sys_end']
                     
-                    # Get genomic coordinates from the GFF database
+                    # get genomic coordinates from the GFF database
                     start_coord, start_end, start_seq_id = self._find_gene_coordinates(db, beg_hit_id)
                     end_coord, end_end, end_seq_id = self._find_gene_coordinates(db, end_hit_id)
 
-                    # For the complete system, use start of first gene and end of last gene
+                    # for complete system genomic sequence, use start of first gene and end of last gene
                     system_start = start_coord
                     system_end = end_end
                     
@@ -226,7 +221,7 @@ class DefenseExtractor:
                     # progress.advance(task_systems)
                     continue
                 
-                # Skip if coordinates invalid
+                # skip if coordinates invalid
                 if system_start is None or system_end is None or start_seq_id is None or end_seq_id is None:
                     self._log_error(
                         "COORD_ERROR", "Missing coordinates for system", 
@@ -253,11 +248,13 @@ class DefenseExtractor:
                     
                 seq_id = start_seq_id
                 
-                # Valid coordinates - swap if needed
+                # valid coordinates - swap if needed
                 if system_start > system_end:
                     system_start, system_end = system_end, system_start
+                    self.console.print(f"[bold yellow]{'Warning':>12}[/] System {sys_id} coordinates swapped: start > end.")
+
                     
-                # Raise warning for suspiciously large regions
+                # raise warning for suspiciously large regions
                 region_size = system_end - system_start + 1
                 if region_size > 1e4:
                     self._log_error(
@@ -266,15 +263,13 @@ class DefenseExtractor:
                     )
                     self.console.print(f"[bold yellow]{'Warning':>12}[/] System {sys_id} region too large: {region_size} bp.")
                 
-                # Extract sequence
+                # extract genomic sequence, store and write if needed
                 if seq_id in genome_dict:
                     try:
-                        # Get sequence using system_start and system_end
                         genome_seq = genome_dict[seq_id].seq
                         sequence = genome_seq[max(0, system_start-1):min(len(genome_seq), system_end)]
                         sequence_length = len(sequence)
                         
-                        # Store sequence data in results
                         results[sys_id] = {
                             "sequence": str(sequence),
                             "length": sequence_length,
@@ -286,7 +281,6 @@ class DefenseExtractor:
                             "strain_id": strain_id
                         }
                         
-                        # Write to file if requested
                         if self.write_output and output_dir:
                             output_file = os.path.join(str(output_dir), f"{sys_id}.fasta")
                             with open(output_file, "w") as out:
@@ -312,7 +306,7 @@ class DefenseExtractor:
                     
                 # progress.advance(task_systems)
 
-            self.console.print(f"[bold green]{'Extracted':>12}[/] {len(results)} defense systems")
+            self.console.print(f"[bold green]{'Extracted':>12}[/] {len(results)} defense systems for [light blue]{{strain_id}}[/]")
             
         except Exception as e:
             self._log_error(
@@ -322,7 +316,7 @@ class DefenseExtractor:
             self.console.print(f"[bold red]Fatal Error:[/] {str(e)}")
             
         finally:
-            # Clean up temp database
+            # clean up temp database
             if db_path != ":memory:" and os.path.exists(db_path) and (not gff_cache_dir or unique_id in db_path):
                 try:
                     os.unlink(db_path)
@@ -339,11 +333,11 @@ class DefenseExtractor:
         
     def extract_gene_sequences(
         self,
-        systems_tsv_file: pathlib.Path, 
-        genes_tsv_file: pathlib.Path, 
-        faa_file: pathlib.Path, 
-        fna_file: pathlib.Path,
-        output_dir: Optional[pathlib.Path] = None,
+        systems_tsv_file: Union[pathlib.Path, str], 
+        genes_tsv_file: Union[pathlib.Path, str], 
+        faa_file: Union[pathlib.Path, str], 
+        fna_file: Union[pathlib.Path, str],
+        output_dir: Optional[Union[pathlib.Path, str]] = None,
         strain_id: Optional[str] = None,
     ) -> Dict[str, Dict[str, Any]]:
         """
@@ -360,11 +354,10 @@ class DefenseExtractor:
         Returns:
             Dictionary mapping system_id to gene sequence data
         """
-        # Create output directory if needed and writing is enabled
         if self.write_output and output_dir:
             os.makedirs(output_dir, exist_ok=True)
             
-        # Track files for error logging
+        # files for error logging
         files_dict = {
             "systems_tsv": systems_tsv_file,
             "genes_tsv": genes_tsv_file,
@@ -375,7 +368,6 @@ class DefenseExtractor:
         if output_dir:
             files_dict["output_dir"] = output_dir
             
-        # Create progress tracking
         using_external_progress = self.progress is not None
         progress = self.progress or rich.progress.Progress(
             rich.progress.SpinnerColumn(),
@@ -386,14 +378,12 @@ class DefenseExtractor:
             rich.progress.TextColumn("[bold]{task.completed}/{task.total}")
         )
         
-        # Dictionary to store results
         results = {}
         
         try:
             if not using_external_progress:
                 progress.start()
                 
-            # Read TSV files
             try:
                 systems_df = pd.read_csv(systems_tsv_file, sep='\t')
                 genes_df = pd.read_csv(genes_tsv_file, sep='\t')
@@ -405,16 +395,15 @@ class DefenseExtractor:
                 self.console.print(f"[bold red]Error:[/] Failed to read TSV files: {str(e)}")
                 return {}
                 
-            # Create FASTA indices
             faa_index = None
             fna_index = None
             try:
-                if faa_file: 
+                if os.path.exists(faa_file) and os.path.isfile(faa_file): 
                     faa_index = self._create_fasta_index(faa_file)
-                if fna_file: 
+                if os.path.exists(fna_file) and os.path.isfile(fna_file): 
                     fna_index = self._create_fasta_index(fna_file)
                     
-                # Check that at least one index was created
+                # at least one index was created
                 if faa_index is None and fna_index is None:
                     self.console.print(f"[bold red]Error:[/] No valid FASTA files provided")
                     return {}
@@ -437,7 +426,6 @@ class DefenseExtractor:
                 sys_id = system['sys_id']
                 # progress.update(task, description=f"[bold cyan]Extracting[/] genes for: {sys_id}")
                 
-                # Process system
                 result = self._extract_sequences_for_system(
                     sys_id, genes_df, faa_index, fna_index, output_dir, strain_id, progress
                 )
@@ -466,21 +454,21 @@ class DefenseExtractor:
         genes_df: pd.DataFrame, 
         faa_index: Any, 
         fna_index: Any, 
-        output_dir: Optional[pathlib.Path],
+        output_dir: Optional[Union[pathlib.Path, str]],
         strain_id: Optional[str],
         progress: Optional[rich.progress.Progress] = None
     ) -> Dict[str, Any]:
         """Extract gene sequences for a single defense system"""
-        # Prepare file paths for error logging
+        # file paths for error logging
         files_dict = {"system_id": system_id}
         if output_dir:
             files_dict.update({
                 "output_dir": output_dir,
                 "faa_output": os.path.join(output_dir, f"{system_id}.faa") if self.write_output else None,
                 "fna_output": os.path.join(output_dir, f"{system_id}.fna") if self.write_output else None
-            })
+            }) # type: ignore
         
-        # Filter genes for this system
+        # filter only genes for this system
         system_genes = genes_df[genes_df['sys_id'] == system_id]
         
         if system_genes.empty:
@@ -492,10 +480,8 @@ class DefenseExtractor:
                 progress.console.print(f"[bold yellow]Warning:[/] No genes found for system {system_id}")
             return {}
         
-        # Get gene IDs
         hit_ids = set(system_genes['hit_id'].unique())
         
-        # Prepare output file paths
         faa_out = os.path.join(str(output_dir), f"{system_id}.faa") if self.write_output and output_dir else None
         fna_out = os.path.join(str(output_dir), f"{system_id}.fna") if self.write_output and output_dir else None
         
@@ -506,7 +492,7 @@ class DefenseExtractor:
         }
         
         try:
-            # Find matching sequences - only process if index exists
+            # find matching sequences
             faa_matching = []
             fna_matching = []
             
@@ -520,27 +506,24 @@ class DefenseExtractor:
                     seq_id for seq_id in fna_index if any(hit_id in seq_id for hit_id in hit_ids)
                 ]
             
-            # Process protein sequences only if faa_index exists
             faa_count = 0
+            # process protein sequences only if faa_index exists
             if faa_index is not None:
                 faa_buffer = io.StringIO() if not self.write_output else None
                 
                 try:
-                    # Open file for writing if needed
                     out_handle = open(faa_out, "w") if faa_out else faa_buffer
                     
                     for seq_id in faa_matching:
-                        # Get original record
                         record = faa_index[seq_id]
                         
-                        # Extract protein ID from sequence ID
                         protein_id = self._extract_protein_id(seq_id, hit_ids)
-                        
-                        # Create modified ID with system
+
+                        # create modified ID with system for downstream processing
+                        # retains system and protein information 
                         modified_id = f"{system_id}__{protein_id}"
                         modified_desc = f"{modified_id} [system={system_id}]"
                         
-                        # Store in results
                         result["proteins"][protein_id] = {
                             "sequence": str(record.seq),
                             "length": len(record.seq),
@@ -548,15 +531,13 @@ class DefenseExtractor:
                             "id": modified_id
                         }
                         
-                        # Write to file/buffer
                         self._write_fasta(out_handle, modified_id, modified_desc, str(record.seq))
                         faa_count += 1
                         
-                    # Close file if it was opened
                     if faa_out and out_handle:
                         out_handle.close()
                     elif faa_buffer:
-                        # Store buffer content in result
+                        # store buffer content in result
                         result["protein_fasta"] = faa_buffer.getvalue()
                         faa_buffer.close()
                         
@@ -568,27 +549,22 @@ class DefenseExtractor:
                     if progress:
                         progress.console.print(f"[bold red]Error:[/] Failed to process protein sequences for {system_id}: {str(e)}")
             
-            # Process nucleotide sequences only if fna_index exists
+            # process nucleotide sequences only if fna_index exists
             fna_count = 0
             if fna_index is not None:
                 fna_buffer = io.StringIO() if not self.write_output else None
                 
                 try:
-                    # Open file for writing if needed
                     out_handle = open(fna_out, "w") if fna_out else fna_buffer
                     
                     for seq_id in fna_matching:
-                        # Get original record
                         record = fna_index[seq_id]
                         
-                        # Extract gene ID from sequence ID
                         gene_id = self._extract_protein_id(seq_id, hit_ids)
                         
-                        # Create modified ID with system
-                        modified_id = f"{system_id}_{gene_id}"
+                        modified_id = f"{system_id}__{gene_id}"
                         modified_desc = f"{modified_id} [system={system_id}]"
                         
-                        # Store in results
                         result["nucleotides"][gene_id] = {
                             "sequence": str(record.seq),
                             "length": len(record.seq),
@@ -596,15 +572,13 @@ class DefenseExtractor:
                             "id": modified_id
                         }
                         
-                        # Write to file/buffer
                         self._write_fasta(out_handle, modified_id, modified_desc, str(record.seq))
                         fna_count += 1
                         
-                    # Close file if it was opened
                     if fna_out and out_handle:
                         out_handle.close()
                     elif fna_buffer:
-                        # Store buffer content in result
+                        # store buffer content in result
                         result["nucleotide_fasta"] = fna_buffer.getvalue()
                         fna_buffer.close()
                         
@@ -616,14 +590,12 @@ class DefenseExtractor:
                     if progress:
                         progress.console.print(f"[bold red]Error:[/] Failed to process nucleotide sequences for {system_id}: {str(e)}")
             
-            # Add file paths to result if writing was enabled
             if self.write_output:
                 if faa_out and faa_index is not None:
                     result["faa_file"] = faa_out
                 if fna_out and fna_index is not None:
                     result["fna_file"] = fna_out
             
-            # Report success
             if progress:
                 if faa_index is not None and fna_index is not None:
                     progress.console.print(f"[bold green]Extracted[/] {faa_count} proteins and {fna_count} nucleotides for {system_id}")
@@ -647,32 +619,18 @@ class DefenseExtractor:
     
     def _find_gene_coordinates(self, db, gene_id):
         """Find gene coordinates in GFF database"""
-        # Try direct exact ID match
+        # direct exact ID match
         try:
             feature = db[gene_id]
             return (feature.start, feature.end, feature.seqid) if feature.featuretype in ['gene', 'CDS', 'mRNA'] else (None, None, None)
-        except Exception:
+        except Exception as e:
+            self._log_error(
+                "GENE_LOOKUP_ERROR", 
+                f"Failed to find gene {gene_id} in GFF database", 
+                exception=e
+            )
             pass
         
-        # Try searching for ID in attributes
-        for feature_type in ['gene', 'CDS', 'mRNA']:
-            try:
-                features = list(db.features_of_type(feature_type))
-                for feature in features:
-                    for key in ['ID', 'Name', 'locus_tag', 'gene', 'product']:
-                        if key not in feature.attributes:
-                            continue
-                        
-                        for value in feature.attributes[key]:
-                            if (value == gene_id or 
-                                f"_{gene_id}_" in value or 
-                                value.startswith(f"{gene_id}_") or 
-                                value.endswith(f"_{gene_id}")):
-                                return feature.start, feature.end, feature.seqid
-            except Exception:
-                continue
-        
-        # If no match found
         return None, None, None
     
     def _create_fasta_index(self, fasta_file, reindex=False):
@@ -684,11 +642,11 @@ class DefenseExtractor:
     
     def _extract_protein_id(self, seq_id, hit_ids):
         """Extract the protein ID from a sequence ID using the hit IDs for matching"""
-        # First try direct match
+        # try direct match
         if seq_id in hit_ids:
             return seq_id
             
-        # Try to extract from sequence ID
+        # try to extract from sequence ID
         for hit_id in hit_ids:
             if hit_id in seq_id:
                 return hit_id
@@ -699,11 +657,8 @@ class DefenseExtractor:
     def _write_fasta(self, handle, seq_id, description, sequence):
         """Write a sequence in FASTA format"""
         handle.write(f">{description}\n")
-        
-        # Write sequence in blocks of 60 characters
-        for i in range(0, len(sequence), 60):
-            handle.write(sequence[i:i+60] + "\n")
-            
+        handle.write(sequence)
+        handle.write("\n")
         return None
     
     def _log_error(self, error_type, message, strain_id=None, system_id=None, files=None, exception=None):
@@ -711,7 +666,7 @@ class DefenseExtractor:
         import time
         import traceback
         
-        # Skip logging if no output directory
+        # skip logging if no output directory
         if not self.output_base_dir:
             return None
             
