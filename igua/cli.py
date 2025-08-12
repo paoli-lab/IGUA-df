@@ -238,80 +238,42 @@ def build_parser() -> argparse.ArgumentParser:
 def create_dataset(
     progress: rich.progress.Progress,
     input_files: typing.List[pathlib.Path], 
-    defense_systems_tsv: typing.Optional[pathlib.Path] = None,
-    defense_genes_tsv: typing.Optional[pathlib.Path] = None,
-    gff_file: typing.Optional[pathlib.Path] = None,
-    genome_file: typing.Optional[pathlib.Path] = None,
-    protein_file: typing.Optional[pathlib.Path] = None,
-    gene_file: typing.Optional[pathlib.Path] = None,
     write_defense_systems: typing.Optional[pathlib.Path] = None
 ) -> BaseDataset:
     """Constructor for Dataset, handles inputs based on input file types"""
     if not input_files:
         raise ValueError("No input files provided")
     
-    # Case 1: Individual DefenseFinder files provided via command line arguments
-    if defense_systems_tsv and defense_genes_tsv and gff_file and genome_file and protein_file:
-
-        progress.console.print(f"[bold blue]{'Using':>12}[/] individual DefenseFinder files")
-        progress.console.print(f"[cyan]{'Files':>12}[/] Systems: {defense_systems_tsv.name}")
-        progress.console.print(f"[cyan]{'':>12}[/] Genes: {defense_genes_tsv.name}")
-        progress.console.print(f"[cyan]{'':>12}[/] GFF: {gff_file.name}")
-        progress.console.print(f"[cyan]{'':>12}[/] Genome: {genome_file.name}")
-        progress.console.print(f"[cyan]{'':>12}[/] Proteins: {protein_file.name}")
-        if gene_file:
-            progress.console.print(f"[cyan]{'':>12}[/] Genes: {gene_file.name}")
-        
-        dataset = DefenseFinderDataset()
-        
-        # Set up as individual file mode 
-        dataset.defense_systems_tsv = defense_systems_tsv
-        dataset.defense_genes_tsv = defense_genes_tsv
-        dataset.gff_file = gff_file
-        dataset.genome_file = genome_file
-        dataset.protein_file = protein_file
-        dataset.gene_file = gene_file
-        dataset.write_output = write_defense_systems is not None
-        dataset.output_dir = write_defense_systems
-        
-        # Create a virtual single-row metadata for consistency
-        dataset.is_single_file_mode = True
-        dataset.defense_metadata = None
-        
-        return dataset
-    
-    # Case 2: Check if input files contain DefenseFinder metadata TSV
+    # check if input files contain DefenseFinder metadata TSV
     for input_file in input_files:
         if input_file.suffix.lower() == ".tsv":
-            try:
-                # Check first few lines of TSV for DefenseFinder metadata columns
-                with open(input_file, "r") as f:
-                    header = f.readline().strip().split("\t")
-                    progress.console.print(f"[cyan]{'Debug':>12}[/] Found TSV headers: {header}")
-                    
-                    # DefenseFinder metadata format (new method)
-                    metadata_cols = ["systems_tsv", "genes_tsv", "gff_file", "fasta_file"]
-
-                    has_new_format = all(col in header for col in metadata_cols)
-
-                    if has_new_format:
-                        progress.console.print(f"[bold blue]{'Detected':>12}[/] DefenseFinder metadata TSV format")
-                        dataset = DefenseFinderDataset()
-                        dataset.defense_metadata = input_file
-                        dataset.write_output = write_defense_systems is not None
-                        dataset.output_dir = write_defense_systems
-                        dataset.is_single_file_mode = False
-                        return dataset
-                    
-                    # If it's a TSV but doesn't match DefenseFinder format, show what we found
-                    progress.console.print(f"[yellow]{'Warning':>12}[/] TSV file found but header doesn't match DefenseFinder format")
-                    progress.console.print(f"[yellow]{'Found':>12}[/] columns: {', '.join(header)}")
-                    
-            except Exception as e:
-                progress.console.print(f"[yellow]{'Warning':>12}[/] Error reading TSV file {input_file}: {e}")
-                continue
+            with open(input_file, "r") as f:
+                header = f.readline().strip().split("\t")
+                
+                metadata_cols = ["systems_tsv", "genes_tsv", "gff_file", "fasta_file"]
+                
+                has_required_cols = all(col in header for col in metadata_cols)
+                
+                if has_required_cols:
+                    progress.console.print(f"[bold blue]{'Detected':>12}[/] DefenseFinder metadata TSV format")
+                    dataset = DefenseFinderDataset()
+                    dataset.defense_metadata = input_file
+                    dataset.write_output = write_defense_systems is not None
+                    dataset.output_dir = write_defense_systems
+                    return dataset
+                
+                progress.console.print(f"[yellow]{'Warning':>12}[/] TSV file found but header doesn't match DefenseFinder format")
+                progress.console.print(f"[yellow]{'Found':>12}[/] columns: {', '.join(header)}")
+                progress.console.print(f"[yellow]{'Expected':>12}[/] Required columns for DefenseFinder metadata:")
+                progress.console.print(f"[yellow]{'Format':>12}[/] systems_tsv, genes_tsv, gff_file, fasta_file, fa_file")
     
-    # Case 3: Traditional file type detection (GenBank, GFF, etc.)
+                raise TypeError(
+                    f"\nDefenseFinder TSV error for {input_file}"
+                    f"\nPlease check that your TSV file has the required column headers."
+                )
+
+
+    # traditional file type detection (GenBank, GFF, etc.)
     extension_mapping = {
         '.gb': GenBankDataset,
         '.gbk': GenBankDataset, 
@@ -332,18 +294,18 @@ def create_dataset(
         else:
             unsupported_files.append(file_path)
     
-    # If we have TSV files that weren't recognized as DefenseFinder, that's an error
-    if tsv_files:
-        progress.console.print(f"[bold red]{'Error':>12}[/] TSV files found but none match DefenseFinder format:")
-        for tsv_file in tsv_files:
-            progress.console.print(f"[red]{'':>12}[/] {tsv_file}")
-        progress.console.print(f"[yellow]{'Expected':>12}[/] Required columns for DefenseFinder metadata:")
-        progress.console.print(f"[yellow]{'Format 2':>12}[/] systems_tsv, genes_tsv, gff_file, fasta_file, fa_file")
+    # # if TSV files weren't recognized as DefenseFinder, that's an error
+    # if tsv_files:
+    #     progress.console.print(f"[bold red]{'Error':>12}[/] TSV files found but none match DefenseFinder format:")
+    #     for tsv_file in tsv_files:
+    #         progress.console.print(f"[red]{'':>12}[/] {tsv_file}")
+    #     progress.console.print(f"[yellow]{'Expected':>12}[/] Required columns for DefenseFinder metadata:")
+    #     progress.console.print(f"[yellow]{'Format':>12}[/] systems_tsv, genes_tsv, gff_file, fasta_file, fa_file")
         
-        raise TypeError(
-            f"TSV files found but none match DefenseFinder metadata format. "
-            f"Please check that your TSV file has the required column headers."
-        )
+    #     raise TypeError(
+    #         f"TSV files found but none match DefenseFinder metadata format. "
+    #         f"Please check that your TSV file has the required column headers."
+    #     )
     
     if unsupported_files:
         raise TypeError(
@@ -441,7 +403,13 @@ def main(argv: typing.Optional[typing.List[str]] = None) -> int:
         argcomplete.autocomplete(parser)
     args = parser.parse_args(argv)
 
-    # Validate individual DefenseFinder file arguments
+    if args.workdir is None:
+        workdir = pathlib.Path(tempfile.mkdtemp())
+    else:
+        workdir = pathlib.Path(args.workdir)
+        workdir.mkdir(parents=True, exist_ok=True)
+
+    # validate individual DefenseFinder file arguments
     individual_args = [
         args.defense_systems_tsv, 
         args.defense_genes_tsv, 
@@ -450,33 +418,45 @@ def main(argv: typing.Optional[typing.List[str]] = None) -> int:
         args.protein_file,
     ]
     
-    # Check if we're in individual file mode
+    # for Defense finder 
     using_individual_files = any(individual_args)
     
     if using_individual_files:
-        # Individual file mode - require all DefenseFinder arguments
+        # individual file mode requires all DefenseFinder arguments
         if not all(individual_args):
             parser.error(
                 "Individual DefenseFinder mode requires ALL of: "
                 "--defense-systems-tsv, --defense-genes-tsv, --gff, --genome, --protein-file"
             )
-                  
-        # For individual mode, input files are not required
+
+        # DefenseFinder: when individual files supplied, input files not required
         if not args.input:
-            args.input = []
+            # create a single-row pd.df with the individual files
+            input_dict_df = {
+                "strain_id": [os.path.basename(args.genome).split('.')[0]],
+                "systems_tsv": [str(args.defense_systems_tsv)],
+                "genes_tsv": [str(args.defense_genes_tsv)],
+                "gff_file": [str(args.gff)],
+                "fasta_file": [str(args.genome)],
+                "faa_file": [str(args.protein_file)]
+            }
+            
+            # optional genes fna file 
+            if args.gene_file:
+                input_dict_df["fna_file"] = [str(args.gene_file)]
+            
+            input_df = pandas.DataFrame(input_dict_df)
+            
+            temp_tsv = workdir / "individual_files_metadata.tsv"
+            input_df.to_csv(temp_tsv, sep="\t", index=False)
+            
+            args.input = [temp_tsv]
     else:
-        # Metadata/traditional mode - require input files
+        # metadata_tsv mode requires input files
         if not args.input:
             parser.error("Input files (-i/--input) are required when not using individual DefenseFinder files")
 
     with contextlib.ExitStack() as ctx:
-        # open temporary folder
-        if args.workdir is None:
-            workdir = pathlib.Path(ctx.enter_context(tempfile.TemporaryDirectory()))
-        else:
-            workdir = pathlib.Path(args.workdir)
-            workdir.mkdir(parents=True, exist_ok=True)
-
         # prepare progress bar
         progress = ctx.enter_context(
             rich.progress.Progress(
@@ -499,25 +479,13 @@ def main(argv: typing.Optional[typing.List[str]] = None) -> int:
         dataset = create_dataset(
             progress, 
             args.input,
-            defense_systems_tsv=getattr(args, 'defense_systems_tsv', None),
-            defense_genes_tsv=getattr(args, 'defense_genes_tsv', None),
-            gff_file=getattr(args, 'gff', None),
-            genome_file=getattr(args, 'genome', None),
-            protein_file=getattr(args, 'protein_file', None),
-            gene_file=getattr(args, 'gene_file', None),
             write_defense_systems=getattr(args, 'write_defense_systems', None)
         )
 
         # extract raw sequences
         clusters_fna = workdir.joinpath("clusters.fna")
         progress.console.print(f"[bold blue]{'Loading':>12}[/] input clusters")
-        
-        # For individual file mode, pass empty list as input_files
-        if using_individual_files:
-            input_sequences = dataset.extract_sequences(progress, [], clusters_fna)
-        else:
-            input_sequences = dataset.extract_sequences(progress, args.input, clusters_fna)
-            
+        input_sequences = dataset.extract_sequences(progress, args.input, clusters_fna)
         progress.console.print(
             f"[bold green]{'Loaded':>12}[/] {len(input_sequences)} clusters to process"
         )
@@ -566,19 +534,17 @@ def main(argv: typing.Optional[typing.List[str]] = None) -> int:
                 f"[bold blue]{'Extracting':>12}[/] protein sequences from clusters"
             )
             
-            # For DefenseFinder datasets, we need to handle protein extraction differently
+            # DefenseFinder datasets: handle protein extraction differently
             if is_defense_finder:
-                # Check if proteins.faa file exists and is not empty before proceeding
                 try:
                     protein_sizes = dataset.extract_proteins(
                         progress, args.input, proteins_faa, representatives
                     )
                     
-                    # Verify the file was created and is not empty
+                    # verify protein file was created and is not empty
                     if not proteins_faa.exists() or proteins_faa.stat().st_size == 0:
                         progress.console.print(f"[bold yellow]{'Warning':>12}[/] No proteins extracted from defense systems")
                         progress.console.print(f"[bold yellow]{'Skipping':>12}[/] protein clustering due to empty protein file")
-                        # Skip protein clustering and proceed with nucleotide-only clustering
                         args.clustering = False
                     else:
                         progress.console.print(f"[bold green]{'Extracted':>12}[/] proteins to {proteins_faa} ({proteins_faa.stat().st_size} bytes)")
@@ -588,12 +554,12 @@ def main(argv: typing.Optional[typing.List[str]] = None) -> int:
                     progress.console.print(f"[bold yellow]{'Skipping':>12}[/] protein clustering due to extraction failure")
                     args.clustering = False
             else:
-                # Traditional datasets
+                # traditional datasets
                 protein_sizes = dataset.extract_proteins(
                     progress, args.input, proteins_faa, representatives
                 )
 
-            # Only proceed with protein clustering if we have a valid protein file
+            # proceed with protein clustering with valid file 
             if args.clustering and proteins_faa.exists() and proteins_faa.stat().st_size > 0:
                 # cluster proteins
                 prot_db = Database.create(mmseqs, proteins_faa)
@@ -601,21 +567,13 @@ def main(argv: typing.Optional[typing.List[str]] = None) -> int:
                 prot_clusters = prot_result.to_dataframe(columns=["protein_representative", "protein_id"])
 
                 # extract protein representatives - determine cluster_id based on dataset type
-                if is_defense_finder:
-                    # Check if this is single file mode or metadata mode
-                    if hasattr(dataset, 'is_single_file_mode') and dataset.is_single_file_mode:
-                        # Single file mode: protein_id IS the cluster_id (like individual files)
-                        prot_clusters["cluster_id"] = prot_clusters["protein_id"]
-                    elif hasattr(dataset, 'defense_metadata') and dataset.defense_metadata:
-                        # Metadata mode: use double underscore delimiter
-                        prot_clusters["cluster_id"] = (
+                if is_defense_finder and hasattr(dataset, 'defense_metadata') and dataset.defense_metadata:
+                    # double underscore for DefenseFinder 
+                    prot_clusters["cluster_id"] = (
                             prot_clusters["protein_id"].str.rsplit("__", n=1).str[0]
                         )
-                    else:
-                        # Fallback: treat as individual files format
-                        prot_clusters["cluster_id"] = prot_clusters["protein_id"]
                 else:
-                    # Traditional format: use single underscore delimiter
+                    # traditional format: use single underscore delimiter
                     prot_clusters["cluster_id"] = (
                         prot_clusters["protein_id"].str.rsplit("_", n=1).str[0]
                     )
@@ -659,7 +617,7 @@ def main(argv: typing.Optional[typing.List[str]] = None) -> int:
                     }
                 )
             else:
-                # Fallback to nucleotide-only clustering
+                # fallback to nucleotide-only clustering
                 progress.console.print(f"[bold yellow]{'Using':>12}[/] nucleotide-only clustering (no proteins available)")
                 sorted_representatives = sorted(representatives, key=representatives.__getitem__)
                 gcfs3 = pandas.DataFrame(

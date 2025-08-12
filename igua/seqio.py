@@ -184,19 +184,18 @@ class DefenseFinderDataset(BaseDataset):
     """DefenseFinder dataset class.
     This class is used to extract nucleotide and protein sequences from DefenseFinder output files.
     """
-    def __init__(self):
+    def __init__(self) -> None:
         """Initialize the DefenseFinderDataset class."""
-        self.defense_metadata = None  # pathlib.Path to TSV with paths to defense finder files
-        self.defense_systems_tsv = None  # pathlib.Path to DefenseFinder systems TSV
-        self.defense_genes_tsv = None  # pathlib.Path to DefenseFinder genes TSV
-        self.gff_file = None  # pathlib.Path to GFF file
-        self.genome_file = None  # pathlib.Path to genome FASTA file
-        self.protein_file = None  # pathlib.Path to protein FASTA file
-        self.gene_file = None  # pathlib.Path to gene nucleotide FASTA file
-        self.write_output = False  # Whether to write output files
-        self.output_dir = None  # Output directory for files
-        self.is_single_file_mode = False  # Flag for individual file mode
-    
+        self.defense_metadata: typing.Optional[typing.Union[pathlib.Path, str]] = None  # TSV with paths to defense finder files
+        self.defense_systems_tsv: typing.Optional[typing.Union[pathlib.Path, str]] = None  # DefenseFinder output systems TSV
+        self.defense_genes_tsv: typing.Optional[typing.Union[pathlib.Path, str]] = None  # DefenseFinder output genes TSV
+        self.gff_file: typing.Optional[typing.Union[pathlib.Path, str]] = None  # GFF file (genome annotation)
+        self.genome_file: typing.Optional[typing.Union[pathlib.Path, str]] = None  # FASTA file (genome sequence)
+        self.protein_file: typing.Optional[typing.Union[pathlib.Path, str]] = None  # protein FASTA file
+        self.gene_file: typing.Optional[typing.Union[pathlib.Path, str]] = None  # gene nucleotide FASTA file
+        self.write_output: bool = False  # write output files to self.output_dir
+        self.output_dir: typing.Optional[typing.Union[pathlib.Path, str]] = None  # output directory for writing files
+
     def extract_sequences(
         self,
         progress: rich.progress.Progress,
@@ -213,29 +212,6 @@ class DefenseFinderDataset(BaseDataset):
         Returns:
             DataFrame with cluster_id, cluster_length, filename
         """
-        # Check for direct DefenseFinder integration mode
-        if self._check_defense_finder_integration_mode():
-            return self._process_with_defense_extractor(progress, output)
-        
-
-    def _check_defense_finder_integration_mode(self) -> bool:
-        """Check if we're in direct DefenseFinder integration mode."""
-        # Check if direct DefenseFinder mode is enabled
-        return (
-            (self.defense_metadata is not None) or
-            (self.defense_systems_tsv is not None and 
-             self.defense_genes_tsv is not None and 
-             self.gff_file is not None and 
-             self.genome_file is not None)
-        )
-    
-    def _process_with_defense_extractor(
-        self,
-        progress: rich.progress.Progress,
-        output: pathlib.Path
-    ) -> pandas.DataFrame:
-        """Process defense systems using the DefenseExtractor."""
-        # Create temporary directory for output if needed
         temp_dir = None
         if self.write_output and not self.output_dir:
             temp_dir = tempfile.TemporaryDirectory()
@@ -251,106 +227,17 @@ class DefenseFinderDataset(BaseDataset):
                 write_output=self.write_output
             )
             
-            # Use defense_metadata file if provided
-            if self.defense_metadata:
-                progress.console.print(f"[bold blue]{'Using':>12}[/] defense metadata file: {self.defense_metadata}")
-                try:
-                    df = pandas.read_csv(self.defense_metadata, sep="\t")
-                    return self._process_defense_files_from_tsv(progress, df, output, extractor)
-                except Exception as e:
-                    progress.console.print(f"[bold red]{'Error':>12}[/] reading defense metadata: {e}")
-                    return pandas.DataFrame(columns=["cluster_id", "cluster_length", "filename"]).set_index("cluster_id")
-            
-            # Use individual files
-            progress.console.print(f"[bold blue]{'Using':>12}[/] direct defense finder files")
-
-            # Check if we need protein sequences for clustering
-            if self.protein_file and self.defense_systems_tsv and self.defense_genes_tsv:
-                progress.console.print(f"[bold blue]{'Mode':>12}[/] protein sequence extraction for clustering")
-                
-                # Determine nucleotide file to use
-                fna_file = self.gene_file if self.gene_file else self.genome_file
-                if not fna_file:
-                    progress.console.print(f"[bold red]{'Error':>12}[/] No nucleotide file available")
-                    return pandas.DataFrame(columns=["cluster_id", "cluster_length", "filename"]).set_index("cluster_id")
-                
-                # Extract protein sequences using extract_gene_sequences
-                gene_sequences = extractor.extract_gene_sequences(
-                    systems_tsv_file=self.defense_systems_tsv,
-                    genes_tsv_file=self.defense_genes_tsv,
-                    faa_file=self.protein_file,
-                    fna_file=fna_file,
-                    output_dir=output_dir if self.write_output else None
-                )
-                
-                # Write protein sequences to output file and create DataFrame
-                data = []
-                with open(output, "w") as dst:
-                    for sys_id, system in gene_sequences.items():
-                        # Extract protein sequences for each gene in the system
-                        protein_sequences = system.get("proteins", {})
-                        
-                        if protein_sequences:
-                            # Concatenate all protein sequences in the system 
-                            combined_sequence = "".join(
-                                prot_data["sequence"] for prot_data in protein_sequences.values()
-                            )
-                            length = len(combined_sequence)
-                            
-                            # Write to FASTA file
-                            self.write_fasta(dst, sys_id, combined_sequence)
-                            
-                            # Record for DataFrame
-                            file_path = str(self.protein_file)
-                            data.append((sys_id, length, file_path))
-                        else:
-                            progress.console.print(f"[yellow]{'Warning':>12}[/] No proteins found for system {sys_id}")
-                
-                # Create and return DataFrame
-                progress.console.print(f"[bold green]{'Extracted':>12}[/] {len(data)} protein systems")
-                return pandas.DataFrame(
-                    data=data,
-                    columns=["cluster_id", "cluster_length", "filename"]
-                ).set_index("cluster_id")
-            
-            elif self.defense_systems_tsv and self.defense_genes_tsv and self.gff_file and self.genome_file:
-                # Extract genomic sequences (original behavior)
-                # Extract systems
-                systems = extractor.extract_systems(
-                    systems_tsv_file=self.defense_systems_tsv,
-                    genes_tsv_file=self.defense_genes_tsv,
-                    gff_file=self.gff_file,
-                    fasta_file=self.genome_file,
-                    output_dir=output_dir if self.write_output else None
-                )
-                
-                # Write sequences to output file and create DataFrame
-                data = []
-                with open(output, "w") as dst:
-                    for sys_id, system in systems.items():
-                        sequence = system["sequence"]
-                        length = system["length"]
-                        
-                        # Write to FASTA file
-                        self.write_fasta(dst, sys_id, sequence)
-                        
-                        # Record for DataFrame
-                        file_path = system.get("file_path", str(self.genome_file))
-                        data.append((sys_id, length, file_path))
-                
-                # Create and return DataFrame
-                progress.console.print(f"[bold green]{'Extracted':>12}[/] {len(data)} systems")
-                return pandas.DataFrame(
-                    data=data,
-                    columns=["cluster_id", "cluster_length", "filename"]
-                ).set_index("cluster_id")
-            
-            else:
-                progress.console.print(f"[bold red]{'Error':>12}[/] Missing required files for individual mode")
+            progress.console.print(f"[bold blue]{'Using':>12}[/] defense metadata file: {self.defense_metadata}")
+            try:
+                df = pandas.read_csv(self.defense_metadata, sep="\t")
+                return self._process_defense_files_from_tsv(progress, df, output, extractor)
+            except Exception as e:
+                progress.console.print(f"[bold red]{'Error':>12}[/] reading defense metadata: {e}")
                 return pandas.DataFrame(columns=["cluster_id", "cluster_length", "filename"]).set_index("cluster_id")
             
+            
         finally:
-            # Clean up temporary directory if created
+            # clean up temporary directory if created
             if temp_dir:
                 temp_dir.cleanup()
     
@@ -362,7 +249,7 @@ class DefenseFinderDataset(BaseDataset):
         extractor: typing.Optional[DefenseExtractor] = None
     ) -> pandas.DataFrame:
         """Process defense systems from a TSV file with paths to defense finder files."""
-        # Create extractor if not provided
+        # create extractor if not provided
         if extractor is None:
             extractor = DefenseExtractor(
                 progress=progress,
@@ -370,7 +257,7 @@ class DefenseFinderDataset(BaseDataset):
                 write_output=self.write_output
             )
         
-        # Process each row in DataFrame
+        # iterate over each strain/genome 
         data = []
         with open(output, "w") as dst:
             task = progress.add_task(f"[bold blue]{'Processing':>9}[/] defense systems", total=len(df))
@@ -379,13 +266,11 @@ class DefenseFinderDataset(BaseDataset):
                 strain_id = row.get("strain_id", None)
                 progress.update(task, description=f"[bold blue]{'Processing':>9}[/] strain: {strain_id}")
                 
-                # Get required files
                 systems_tsv = pathlib.Path(row["systems_tsv"])
                 genes_tsv = pathlib.Path(row["genes_tsv"])
                 gff_file = pathlib.Path(row["gff_file"])
                 fasta_file = pathlib.Path(row["fasta_file"])
                 
-                # Check if all files exist
                 missing_files = []
                 for f, name in [(systems_tsv, "systems_tsv"), (genes_tsv, "genes_tsv"), 
                                (gff_file, "gff_file"), (fasta_file, "fasta_file")]:
@@ -394,15 +279,15 @@ class DefenseFinderDataset(BaseDataset):
                 
                 if missing_files:
                     progress.console.print(f"[bold yellow]{'Missing':>12}[/] files for {strain_id}: {', '.join(missing_files)}")
-                    progress.update(task, advance=1)
-                    continue
+                    raise FileNotFoundError(f"Missing required files: {', '.join(missing_files)}")
                 
-                # Extract systems
+                # extract systems
                 strain_output_dir = None
                 if self.write_output and self.output_dir:
                     strain_output_dir = self.output_dir / (strain_id if strain_id else "unknown")
                     strain_output_dir.mkdir(parents=True, exist_ok=True)
                 
+                # extract genomic sequences for phage defense systems
                 systems = extractor.extract_systems(
                     systems_tsv_file=systems_tsv,
                     genes_tsv_file=genes_tsv,
@@ -412,18 +297,18 @@ class DefenseFinderDataset(BaseDataset):
                     strain_id=strain_id
                 )
                 
-                # Write systems to output FASTA and record data
+                # write systems to output FASTA and record data
                 for sys_id, system in systems.items():
                     sequence = system["sequence"]
                     length = system["length"]
                     
-                    # Add strain ID to system ID if available
+                    # add strain ID to system ID if available
                     full_sys_id = f"{strain_id}_{sys_id}" if strain_id else sys_id
                     
-                    # Write to FASTA file
+                    # write to FASTA file
                     self.write_fasta(dst, full_sys_id, sequence)
                     
-                    # Record for DataFrame
+                    # record for DataFrame
                     file_path = system.get("file_path", str(fasta_file))
                     data.append((full_sys_id, length, file_path))
                 
@@ -431,8 +316,8 @@ class DefenseFinderDataset(BaseDataset):
             
             progress.remove_task(task)
         
-        # Create and return DataFrame
-        progress.console.print(f"[bold green]{'Extracted':>12}[/] {len(data)} systems")
+        # create and return DataFrame
+        progress.console.print(f"[bold green]{'Extracted':>12}[/] {len(data)} systems in total from {df.shape[0]} strains/genomes")
         return pandas.DataFrame(
             data=data,
             columns=["cluster_id", "cluster_length", "filename"]
@@ -456,53 +341,6 @@ class DefenseFinderDataset(BaseDataset):
         Returns:
             Dictionary mapping protein IDs to their lengths.
         """
-        # Check for direct DefenseFinder integration mode
-        if self._check_defense_finder_integration_mode():
-            return self._extract_proteins_with_defense_extractor(progress, output, representatives)
-        
-        # Handle TSV summary file
-        if len(inputs) == 1 and inputs[0].suffix.lower() == ".tsv":
-            progress.console.print(f"[bold blue]{'Found':>12}[/] TSV summary file")
-            try:
-                df = pandas.read_csv(inputs[0], sep="\t")
-                
-                # Check if we have all required columns for advanced processing
-                required_cols = ["systems_tsv", "genes_tsv", "faa_file", "fna_file"]
-                if all(col in df.columns for col in required_cols):
-                    # Use defense_extractor for processing
-                    return self._extract_proteins_from_tsv(progress, df, output, representatives)
-                
-                # Process using existing method
-                if "faa_file" in df.columns:
-                    # Filter to representatives if provided
-                    if representatives:
-                        str_reps = set(str(r) for r in representatives)
-                        progress.console.print(
-                            f"[bold blue]{'Filtering':>12}[/] to {len(str_reps)} representatives"
-                        )
-                        sys_ids = [id for id in df["system_id"].astype(str) if id in "\t".join(str_reps)]
-                        df = df[df["system_id"].astype(str).isin(sys_ids)]
-                    
-                    faa_files = [pathlib.Path(f) for f in df["faa_file"] if f]
-                    return self._process_faa_files(progress, faa_files, output, representatives)
-                else:
-                    progress.console.print(
-                        f"[bold yellow]{'Warning':>12}[/] TSV missing 'faa_file' column"
-                    )
-            except Exception as e:
-                progress.console.print(f"[bold red]{'Error':>12}[/] reading TSV: {e}")
-                
-        # Use existing methods for other input types
-        return super().extract_proteins(progress, inputs, output, representatives)
-    
-    def _extract_proteins_with_defense_extractor(
-        self,
-        progress: rich.progress.Progress,
-        output: pathlib.Path,
-        representatives: typing.Container[str]
-    ) -> typing.Dict[str, int]:
-        """Extract proteins using the DefenseExtractor."""
-        # Create temporary directory for output if needed
         temp_dir = None
         if self.write_output and not self.output_dir:
             temp_dir = tempfile.TemporaryDirectory()
@@ -511,58 +349,20 @@ class DefenseFinderDataset(BaseDataset):
             output_dir = self.output_dir
         
         try:
-            # Create extractor
+            # create extractor
             extractor = DefenseExtractor(
                 progress=progress,
                 output_base_dir=output_dir,
                 write_output=self.write_output
             )
-            
-            # Use defense_metadata file if provided
-            if self.defense_metadata:
-                progress.console.print(f"[bold blue]{'Using':>12}[/] defense metadata file: {self.defense_metadata}")
-                try:
-                    df = pandas.read_csv(self.defense_metadata, sep="\t")
-                    return self._extract_proteins_from_tsv(progress, df, output, representatives, extractor)
-                except Exception as e:
-                    progress.console.print(f"[bold red]{'Error':>12}[/] reading defense metadata: {e}")
-                    return {}
-            
-            # Use individual files
-            progress.console.print(f"[bold blue]{'Using':>12}[/] direct defense finder files")
-            
-            # Extract proteins
-            gene_data = extractor.extract_gene_sequences(
-                systems_tsv_file=self.defense_systems_tsv,
-                genes_tsv_file=self.defense_genes_tsv,
-                    faa_file=self.protein_file,
-                    fna_file=None,
-                output_dir=output_dir if self.write_output else None
-            )
-            
-            # Write proteins to output file and record sizes
-            protein_sizes = {}
-            with open(output, "w") as dst:
-                for sys_id, system in gene_data.items():
-                    # Skip if not in representatives
-                    if representatives and sys_id not in representatives:
-                        continue
-                    
-                    # Write proteins
-                    for prot_id, protein in system.get("proteins", {}).items():
-                        seq_id = f"{sys_id}_{prot_id}"
-                        sequence = protein["sequence"]
-                        
-                        # Write to output
-                        self.write_fasta(dst, seq_id, sequence)
-                        
-                        # Record size
-                        protein_sizes[seq_id] = len(sequence)
-            
-            progress.console.print(
-                f"[bold green]{'Extracted':>12}[/] {len(protein_sizes)} proteins from {len(gene_data)} systems"
-            )
-            return protein_sizes
+
+            progress.console.print(f"[bold blue]{'Using':>12}[/] defense metadata file: {self.defense_metadata}")
+            try:
+                df = pandas.read_csv(self.defense_metadata, sep="\t")
+                return self._extract_proteins_from_tsv(progress, df, output, representatives, extractor)
+            except Exception as e:
+                progress.console.print(f"[bold red]{'Error':>12}[/] reading defense metadata: {e}")
+                return {}
             
         finally:
             # Clean up temporary directory if created
@@ -586,17 +386,8 @@ class DefenseFinderDataset(BaseDataset):
                 write_output=self.write_output
             )
         
-        # # Filter to representatives if provided
-        # if representatives:
-        #     rep_set = set(str(r) for r in representatives)
-        #     # Try to match on system_id first
-        #     if "system_id" in df.columns:
-        #         df = df[df["system_id"].astype(str).isin(rep_set)]
-        #     # Then try sys_id
-        #     elif "sys_id" in df.columns:
-        #         df = df[df["sys_id"].astype(str).isin(rep_set)]
         
-        # Process each row in DataFrame
+        # iterate over each genome/strain in DataFrame
         protein_sizes = {}
         with open(output, "w") as dst:
             task = progress.add_task(f"[bold blue]{'Processing':>9}[/] protein sequences", total=len(df))
@@ -605,13 +396,11 @@ class DefenseFinderDataset(BaseDataset):
                 strain_id = row.get("strain_id", None)
                 progress.update(task, description=f"[bold blue]{'Processing':>9}[/] strain: {strain_id}")
                 
-                # Get required files
                 systems_tsv = pathlib.Path(row["systems_tsv"])
                 genes_tsv = pathlib.Path(row["genes_tsv"])
                 faa_file = pathlib.Path(row["faa_file"])
                 fna_file = pathlib.Path(row.get("fna_file", "")) # fna file is optional
                 
-                # Check if required files exist
                 missing_files = []
                 for f, name in [(systems_tsv, "systems_tsv"), (genes_tsv, "genes_tsv"), (faa_file, "faa_file")]:
                     if not f.exists():
@@ -620,9 +409,9 @@ class DefenseFinderDataset(BaseDataset):
                 if missing_files:
                     progress.console.print(f"[bold yellow]{'Missing':>12}[/] files for {strain_id}: {', '.join(missing_files)}")
                     progress.update(task, advance=1)
-                    continue
+                    raise FileNotFoundError(f"Missing required files: {', '.join(missing_files)}")
                 
-                # Extract gene sequences
+                # extract gene sequences
                 strain_output_dir = None
                 if self.write_output and self.output_dir:
                     strain_output_dir = self.output_dir / (strain_id if strain_id else "unknown") / "proteins"
@@ -637,24 +426,25 @@ class DefenseFinderDataset(BaseDataset):
                     strain_id=strain_id
                 )
                 
-                # Write proteins to output file and record sizes
+                # write proteins to output file and record sizes
                 for sys_id, system in gene_data.items():
-                    # Add strain ID to system ID if available
+                    # add strain ID to system ID if available
                     full_sys_id = f"{strain_id}_{sys_id}" if strain_id else sys_id
                     
-                    # Skip if not in representatives (double check)
+                    # skip if not in representatives (double check)
                     if representatives and full_sys_id not in representatives and sys_id not in representatives:
+                        # progress.console.print(f"[bold yellow]{'Skipping':>12}[/] {full_sys_id} not in representatives")
                         continue
                     
-                    # Write proteins
+                    # write proteins
                     for prot_id, protein in system.get("proteins", {}).items():
                         seq_id = f"{full_sys_id}__{prot_id}"
                         sequence = protein["sequence"]
                         
-                        # Write to output
+                        # write to output
                         self.write_fasta(dst, seq_id, sequence)
                         
-                        # Record size
+                        # record size
                         protein_sizes[seq_id] = len(sequence)
                 
                 progress.update(task, advance=1)
@@ -662,8 +452,8 @@ class DefenseFinderDataset(BaseDataset):
             progress.remove_task(task)
         
         progress.console.print(
-            f"[bold green]{'Extracted':>12}[/] {len(protein_sizes)} proteins"
-        )
+            f"[bold green]{'Extracted':>12}[/] {len(protein_sizes)} proteins from {len(representatives)} representative systems"
+            )
         return protein_sizes
 
 
