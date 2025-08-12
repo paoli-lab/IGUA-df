@@ -29,13 +29,15 @@ class DefenseExtractor:
         self, 
         progress: Optional[rich.progress.Progress] = None,
         output_base_dir: Optional[pathlib.Path] = None,
-        write_output: bool = False
+        write_output: bool = False,
+        verbose: bool = False,
     ):
         self.progress = progress
         self.output_base_dir = output_base_dir
         self.write_output = write_output
         self.console = progress.console if progress else Console()
-        
+        self.verbose = verbose
+
     def extract_systems(
         self,
         systems_tsv_file: pathlib.Path, 
@@ -93,10 +95,7 @@ class DefenseExtractor:
             if not using_external_progress:
                 progress.start()
             
-            # Load input data
-            # task_setup = progress.add_task("[bold blue]Setting up...", total=3)
-            
-            # Load TSV files
+            # load TSV files
             # progress.update(task_setup, description="Reading TSV files")
             try:
                 systems_df = pd.read_csv(systems_tsv_file, sep='\t')
@@ -108,10 +107,8 @@ class DefenseExtractor:
                 )
                 self.console.print(f"[bold red]Error:[/] Failed to read TSV files: {str(e)}")
                 return {}
-            # progress.advance(task_setup)
             
-            # Load genome
-            # progress.update(task_setup, description="Loading genome")
+            # load genome
             try:
                 genome_dict = SeqIO.to_dict(SeqIO.parse(fasta_file, "fasta"))
             except Exception as e:
@@ -121,7 +118,6 @@ class DefenseExtractor:
                 )
                 self.console.print(f"[bold red]Error:[/] Failed to load genome: {str(e)}")
                 return {}
-            # progress.advance(task_setup)
             
             # set up GFF database with in-memory fallback
             # progress.update(task_setup, description="Creating GFF database")
@@ -160,14 +156,9 @@ class DefenseExtractor:
                     )
                     self.console.print(f"[bold red]Error:[/] Failed to create GFF database: {str(e2)}")
                     return {}
-                
-            # progress.advance(task_setup)
-            
-            # task_systems = progress.add_task("[bold blue]Processing systems", total=len(systems_df))
             
             for _, system in systems_df.iterrows():
                 sys_id = system['sys_id']
-                # progress.update(task_systems, description=f"Processing: {sys_id}")
                 
                 system_files = {**files_dict, "system_id": sys_id}
                     
@@ -178,7 +169,6 @@ class DefenseExtractor:
                         strain_id=strain_id, system_id=sys_id, files=system_files
                     )
                     self.console.print(f"[bold yellow]{'Warning':>12}[/] No genes found for system {sys_id}")
-                    # progress.advance(task_systems)
                     continue
                 
                 # beginning and ending genes
@@ -261,7 +251,7 @@ class DefenseExtractor:
                         "LARGE_REGION_WARNING", f"System region too large: {region_size} bp", 
                         strain_id=strain_id, system_id=sys_id, files=system_files
                     )
-                    self.console.print(f"[bold yellow]{'Warning':>12}[/] System {sys_id} region too large: {region_size} bp.")
+                    self.console.print(f"[bold yellow]{'Warning':>12}[/] System [cyan]{sys_id}[/] region too large: {region_size} bp.")
                 
                 # extract genomic sequence, store and write if needed
                 if seq_id in genome_dict:
@@ -288,8 +278,8 @@ class DefenseExtractor:
                                 out.write(str(sequence) + "\n")
                             results[sys_id]["file_path"] = output_file
                             
-                        # progress.update(task_systems, description=f"Processing: {sys_id} ({sequence_length} bp)")
-                        self.console.print(f"[bold blue]{'Extracted':>12}[/] {sys_id} sequence ({sequence_length} bp)")
+                        if self.verbose: 
+                            self.console.print(f"[bold blue]{'Extracted':>22}[/] genomic sequence for [cyan]{sys_id}[/] system ({sequence_length} bp)")
                         
                     except Exception as e:
                         self._log_error(
@@ -306,7 +296,7 @@ class DefenseExtractor:
                     
                 # progress.advance(task_systems)
 
-            self.console.print(f"[bold green]{'Extracted':>12}[/] {len(results)} defense systems for [light blue]{{strain_id}}[/]")
+            self.console.print(f"[bold green]{'Wrote':>12}[/] {len(results)} defense systems for [bold cyan]{strain_id}[/]")
             
         except Exception as e:
             self._log_error(
@@ -416,15 +406,9 @@ class DefenseExtractor:
                 self.console.print(f"[bold red]Error:[/] Failed to create sequence indices: {str(e)}")
                 return {}
                 
-            # Process each system
-            # task = progress.add_task(
-            #     f"[bold cyan]Extracting[/] gene sequences", 
-            #     total=len(systems_df)
-            # )
             
             for _, system in systems_df.iterrows():
                 sys_id = system['sys_id']
-                # progress.update(task, description=f"[bold cyan]Extracting[/] genes for: {sys_id}")
                 
                 result = self._extract_sequences_for_system(
                     sys_id, genes_df, faa_index, fna_index, output_dir, strain_id, progress
@@ -432,8 +416,6 @@ class DefenseExtractor:
                 
                 if result:
                     results[sys_id] = result
-                    
-                # progress.update(task, advance=1)
                 
         except Exception as e:
             self._log_error(
@@ -445,7 +427,11 @@ class DefenseExtractor:
         finally:
             if not using_external_progress:
                 progress.stop()
-                
+
+        total_proteins = sum(len(system.get('proteins', {})) for system in results.values())
+        total_nucleotides = sum(len(system.get('nucleotides', {})) for system in results.values())
+        progress.console.print(f"[bold green]{'Wrote':>12}[/] {total_proteins} proteins and {total_nucleotides} nucleotides from {len(results)} systems for [bold cyan]{strain_id}[/]")
+
         return results
     
     def _extract_sequences_for_system(
@@ -456,7 +442,8 @@ class DefenseExtractor:
         fna_index: Any, 
         output_dir: Optional[Union[pathlib.Path, str]],
         strain_id: Optional[str],
-        progress: Optional[rich.progress.Progress] = None
+        progress: Optional[rich.progress.Progress] = None,
+        verbose: bool = False
     ) -> Dict[str, Any]:
         """Extract gene sequences for a single defense system"""
         # file paths for error logging
@@ -588,7 +575,7 @@ class DefenseExtractor:
                         strain_id=strain_id, system_id=system_id, files=files_dict, exception=e
                     )
                     if progress:
-                        progress.console.print(f"[bold red]Error:[/] Failed to process nucleotide sequences for {system_id}: {str(e)}")
+                        progress.console.print(f"[bold red]Error:[/] Failed to process nucleotide sequences for system {system_id}: {str(e)}")
             
             if self.write_output:
                 if faa_out and faa_index is not None:
@@ -596,16 +583,16 @@ class DefenseExtractor:
                 if fna_out and fna_index is not None:
                     result["fna_file"] = fna_out
             
-            if progress:
+            if progress and self.verbose:
                 if faa_index is not None and fna_index is not None:
-                    progress.console.print(f"[bold green]Extracted[/] {faa_count} proteins and {fna_count} nucleotides for {system_id}")
+                    progress.console.print(f"[bold blue]{'Extracted':>22}[/] {faa_count} proteins and {fna_count} nucleotides from [cyan]{system_id}[/] system")
                 elif faa_index is not None:
-                    progress.console.print(f"[bold green]Extracted[/] {faa_count} proteins for {system_id}")
+                    progress.console.print(f"[bold green]{'Extracted':>22}[/] {faa_count} proteins from [cyan]{system_id}[/] system")
                 elif fna_index is not None:
-                    progress.console.print(f"[bold green]Extracted[/] {fna_count} nucleotides for {system_id}")
+                    progress.console.print(f"[bold green]{'Extracted':>22}[/] {fna_count} nucleotides from [cyan]{system_id}[/] system")
                 else:
-                    progress.console.print(f"[bold yellow]Warning[/] No sequences extracted for {system_id}")
-            
+                    progress.console.print(f"[bold yellow]{'Warning':>22}[/] No sequences extracted for [cyan]{system_id}[/] system")
+
             return result
             
         except Exception as e:

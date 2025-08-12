@@ -195,6 +195,7 @@ class DefenseFinderDataset(BaseDataset):
         self.gene_file: typing.Optional[typing.Union[pathlib.Path, str]] = None  # gene nucleotide FASTA file
         self.write_output: bool = False  # write output files to self.output_dir
         self.output_dir: typing.Optional[typing.Union[pathlib.Path, str]] = None  # output directory for writing files
+        self.verbose: bool = False  # verbose output
 
     def extract_sequences(
         self,
@@ -224,7 +225,8 @@ class DefenseFinderDataset(BaseDataset):
             extractor = DefenseExtractor(
                 progress=progress,
                 output_base_dir=output_dir,
-                write_output=self.write_output
+                write_output=self.write_output, 
+                verbose=self.verbose
             )
             
             progress.console.print(f"[bold blue]{'Using':>12}[/] defense metadata file: {self.defense_metadata}")
@@ -254,7 +256,8 @@ class DefenseFinderDataset(BaseDataset):
             extractor = DefenseExtractor(
                 progress=progress,
                 output_base_dir=self.output_dir,
-                write_output=self.write_output
+                write_output=self.write_output, 
+                verbose=self.verbose
             )
         
         # iterate over each strain/genome 
@@ -353,7 +356,8 @@ class DefenseFinderDataset(BaseDataset):
             extractor = DefenseExtractor(
                 progress=progress,
                 output_base_dir=output_dir,
-                write_output=self.write_output
+                write_output=self.write_output, 
+                verbose=self.verbose
             )
 
             progress.console.print(f"[bold blue]{'Using':>12}[/] defense metadata file: {self.defense_metadata}")
@@ -383,7 +387,8 @@ class DefenseFinderDataset(BaseDataset):
             extractor = DefenseExtractor(
                 progress=progress,
                 output_base_dir=self.output_dir,
-                write_output=self.write_output
+                write_output=self.write_output, 
+                verbose=self.verbose
             )
         
         
@@ -417,6 +422,7 @@ class DefenseFinderDataset(BaseDataset):
                     strain_output_dir = self.output_dir / (strain_id if strain_id else "unknown") / "proteins"
                     strain_output_dir.mkdir(parents=True, exist_ok=True)
                 
+                # all systems' proteins extracted 
                 gene_data = extractor.extract_gene_sequences(
                     systems_tsv_file=systems_tsv,
                     genes_tsv_file=genes_tsv,
@@ -427,16 +433,18 @@ class DefenseFinderDataset(BaseDataset):
                 )
                 
                 # write proteins to output file and record sizes
+                # filter by representatives at this stage 
                 for sys_id, system in gene_data.items():
                     # add strain ID to system ID if available
                     full_sys_id = f"{strain_id}_{sys_id}" if strain_id else sys_id
                     
-                    # skip if not in representatives (double check)
+                    # skip if not in representatives 
                     if representatives and full_sys_id not in representatives and sys_id not in representatives:
+                        # debug 
                         # progress.console.print(f"[bold yellow]{'Skipping':>12}[/] {full_sys_id} not in representatives")
                         continue
-                    
-                    # write proteins
+
+                    # write proteins from representative clusters
                     for prot_id, protein in system.get("proteins", {}).items():
                         seq_id = f"{full_sys_id}__{prot_id}"
                         sequence = protein["sequence"]
@@ -446,6 +454,9 @@ class DefenseFinderDataset(BaseDataset):
                         
                         # record size
                         protein_sizes[seq_id] = len(sequence)
+
+                        # debug 
+                        # progress.console.print(f"[bold #ff875f]{'Writing':>12}[/] {seq_id}")
                 
                 progress.update(task, advance=1)
             

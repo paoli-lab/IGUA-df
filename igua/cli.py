@@ -231,6 +231,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="Write extracted defense systems to this directory",
         type=pathlib.Path,
     )
+    group_defense.add_argument(
+        "--defense-finder-verbose",
+        help="Detailed output for extracted defense systems, proteins, and nucleotides.",
+        action="store_true",
+        default=False
+    )
     
     return parser
 
@@ -238,7 +244,8 @@ def build_parser() -> argparse.ArgumentParser:
 def create_dataset(
     progress: rich.progress.Progress,
     input_files: typing.List[pathlib.Path], 
-    write_defense_systems: typing.Optional[pathlib.Path] = None
+    write_defense_systems: typing.Optional[pathlib.Path] = None, 
+    defense_finder_verbose: bool = False,
 ) -> BaseDataset:
     """Constructor for Dataset, handles inputs based on input file types"""
     if not input_files:
@@ -260,6 +267,7 @@ def create_dataset(
                     dataset.defense_metadata = input_file
                     dataset.write_output = write_defense_systems is not None
                     dataset.output_dir = write_defense_systems
+                    dataset.verbose = defense_finder_verbose
                     return dataset
                 
                 progress.console.print(f"[yellow]{'Warning':>12}[/] TSV file found but header doesn't match DefenseFinder format")
@@ -293,19 +301,6 @@ def create_dataset(
             dataset_classes.add(extension_mapping[file_path.suffix.lower()])
         else:
             unsupported_files.append(file_path)
-    
-    # # if TSV files weren't recognized as DefenseFinder, that's an error
-    # if tsv_files:
-    #     progress.console.print(f"[bold red]{'Error':>12}[/] TSV files found but none match DefenseFinder format:")
-    #     for tsv_file in tsv_files:
-    #         progress.console.print(f"[red]{'':>12}[/] {tsv_file}")
-    #     progress.console.print(f"[yellow]{'Expected':>12}[/] Required columns for DefenseFinder metadata:")
-    #     progress.console.print(f"[yellow]{'Format':>12}[/] systems_tsv, genes_tsv, gff_file, fasta_file, fa_file")
-        
-    #     raise TypeError(
-    #         f"TSV files found but none match DefenseFinder metadata format. "
-    #         f"Please check that your TSV file has the required column headers."
-    #     )
     
     if unsupported_files:
         raise TypeError(
@@ -479,7 +474,8 @@ def main(argv: typing.Optional[typing.List[str]] = None) -> int:
         dataset = create_dataset(
             progress, 
             args.input,
-            write_defense_systems=getattr(args, 'write_defense_systems', None)
+            write_defense_systems=getattr(args, 'write_defense_systems', None), 
+            defense_finder_verbose=getattr(args, 'defense_finder_verbose', False)
         )
 
         # extract raw sequences
@@ -531,7 +527,7 @@ def main(argv: typing.Optional[typing.List[str]] = None) -> int:
             # extract proteins and record sizes
             proteins_faa = workdir.joinpath("proteins.faa")
             progress.console.print(
-                f"[bold blue]{'Extracting':>12}[/] protein sequences from clusters"
+                f"[bold blue]{'Extracting':>12}[/] protein sequences from representative clusters"
             )
             
             # DefenseFinder datasets: handle protein extraction differently
