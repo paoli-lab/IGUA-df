@@ -47,6 +47,7 @@ class DefenseExtractor:
         output_dir: Optional[pathlib.Path] = None,
         gff_cache_dir: Optional[pathlib.Path] = None,
         strain_id: Optional[str] = None,
+        activity_filter: str = "defense",
     ) -> Dict[str, Dict[str, Any]]:
         """
         Extract defense systems' sequences from genomic data
@@ -99,6 +100,24 @@ class DefenseExtractor:
             # progress.update(task_setup, description="Reading TSV files")
             try:
                 systems_df = pd.read_csv(systems_tsv_file, sep='\t')
+                
+                original_count = len(systems_df)
+                if activity_filter.lower() != "all":
+                    if 'activity' in systems_df.columns:
+                        systems_df = systems_df[systems_df['activity'].str.lower() == activity_filter.lower()]
+                        filtered_count = len(systems_df)
+                        self.console.print(
+                            f"[bold green]{'Filtered':>12}[/] {original_count} systems to {filtered_count} "
+                            f"([bold cyan]{activity_filter}[/] systems only)"
+                        )
+                    else:
+                        self.console.print(
+                            f"[bold yellow]{'Warning':>12}[/] No 'activity' column found, extracting all systems"
+                        )
+                else:
+                    self.console.print(f"[bold blue]{'Processing':>12}[/] all {original_count} systems (no activity filter)")
+
+
                 genes_df = pd.read_csv(genes_tsv_file, sep='\t')
             except Exception as e:
                 self._log_error(
@@ -296,7 +315,7 @@ class DefenseExtractor:
                     
                 # progress.advance(task_systems)
 
-            self.console.print(f"[bold green]{'Wrote':>12}[/] {len(results)} defense systems for [bold cyan]{strain_id}[/]")
+            self.console.print(f"[bold green]{'Extracted':>12}[/] {len(results)} defense systems for [bold cyan]{strain_id}[/]")
             
         except Exception as e:
             self._log_error(
@@ -329,6 +348,7 @@ class DefenseExtractor:
         fna_file: Union[pathlib.Path, str],
         output_dir: Optional[Union[pathlib.Path, str]] = None,
         strain_id: Optional[str] = None,
+        activity_filter: str = "defense",
     ) -> Dict[str, Dict[str, Any]]:
         """
         Extract gene sequences (protein and nucleotide) for defense systems
@@ -376,6 +396,10 @@ class DefenseExtractor:
                 
             try:
                 systems_df = pd.read_csv(systems_tsv_file, sep='\t')
+                # filter systems by activity if applicable 
+                if activity_filter.lower() != "all":
+                    if 'activity' in systems_df.columns:
+                        systems_df = systems_df[systems_df['activity'].str.lower() == activity_filter.lower()]
                 genes_df = pd.read_csv(genes_tsv_file, sep='\t')
             except Exception as e:
                 self._log_error(
@@ -430,7 +454,7 @@ class DefenseExtractor:
 
         total_proteins = sum(len(system.get('proteins', {})) for system in results.values())
         total_nucleotides = sum(len(system.get('nucleotides', {})) for system in results.values())
-        progress.console.print(f"[bold green]{'Wrote':>12}[/] {total_proteins} proteins and {total_nucleotides} nucleotides from {len(results)} systems for [bold cyan]{strain_id}[/]")
+        progress.console.print(f"[bold green]{'Extracted':>12}[/] {total_proteins} proteins and {total_nucleotides} nucleotides from {len(results)} systems for [bold cyan]{strain_id}[/]")
 
         return results
     

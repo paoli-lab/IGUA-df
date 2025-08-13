@@ -232,8 +232,18 @@ def build_parser() -> argparse.ArgumentParser:
         type=pathlib.Path,
     )
     group_defense.add_argument(
+        "--activity",
+        help="Filter by defense system activity: 'defense' (default), 'antidefense', 'all'",
+        default="defense",
+        choices={
+            "defense",
+            "antidefense",
+            "all"
+        }
+    )
+    group_defense.add_argument(
         "--defense-finder-verbose",
-        help="Detailed output for extracted defense systems, proteins, and nucleotides.",
+        help="Detailed output for extracted defense systems, proteins, and nucleotides",
         action="store_true",
         default=False
     )
@@ -243,43 +253,69 @@ def build_parser() -> argparse.ArgumentParser:
 
 def create_dataset(
     progress: rich.progress.Progress,
-    input_files: typing.List[pathlib.Path], 
-    write_defense_systems: typing.Optional[pathlib.Path] = None, 
-    defense_finder_verbose: bool = False,
+    args: argparse.Namespace,
 ) -> BaseDataset:
-    """Constructor for Dataset, handles inputs based on input file types"""
-    if not input_files:
-        raise ValueError("No input files provided")
+    """Constructor for Dataset, handles inputs based on input file types and arguments"""
     
-    # check if input files contain DefenseFinder metadata TSV
-    for input_file in input_files:
+    # check for individual DefenseFinder files first
+    individual_args = [
+        args.defense_systems_tsv, 
+        args.defense_genes_tsv, 
+        args.gff, 
+        args.genome,
+        args.protein_file,
+    ]
+    
+    if any(individual_args):
+        # individual DefenseFinder file mode
+        if not all(individual_args):
+            raise ValueError(
+                "Individual DefenseFinder mode requires ALL of: "
+                "--defense-systems-tsv, --defense-genes-tsv, --gff, --genome, --protein-file"
+            )
+        
+        progress.console.print(f"[bold blue]{'Using':>12}[/] individual DefenseFinder files")
+        dataset = DefenseFinderDataset()
+        
+        dataset.defense_systems_tsv = args.defense_systems_tsv
+        dataset.defense_genes_tsv = args.defense_genes_tsv
+        dataset.gff_file = args.gff
+        dataset.genome_file = args.genome
+        dataset.protein_file = args.protein_file
+        dataset.gene_file = getattr(args, 'gene_file', None)
+        dataset.write_output = getattr(args, 'write_defense_systems', None) is not None
+        dataset.output_dir = getattr(args, 'write_defense_systems', None)
+        dataset.verbose = getattr(args, 'defense_finder_verbose', False)
+        dataset.activity_filter = getattr(args, 'activity', 'defense') 
+        
+        return dataset
+    
+    # check for metadata TSV files
+    if not args.input:
+        raise ValueError("Either input files (-i) or individual DefenseFinder files must be provided")
+    
+    for input_file in args.input:
         if input_file.suffix.lower() == ".tsv":
             with open(input_file, "r") as f:
                 header = f.readline().strip().split("\t")
                 
                 metadata_cols = ["systems_tsv", "genes_tsv", "gff_file", "fasta_file"]
                 
-                has_required_cols = all(col in header for col in metadata_cols)
-                
-                if has_required_cols:
+                if all(col in header for col in metadata_cols):
                     progress.console.print(f"[bold blue]{'Detected':>12}[/] DefenseFinder metadata TSV format")
                     dataset = DefenseFinderDataset()
                     dataset.defense_metadata = input_file
-                    dataset.write_output = write_defense_systems is not None
-                    dataset.output_dir = write_defense_systems
-                    dataset.verbose = defense_finder_verbose
+                    dataset.write_output = getattr(args, 'write_defense_systems', None) is not None
+                    dataset.output_dir = getattr(args, 'write_defense_systems', None)
+                    dataset.verbose = getattr(args, 'defense_finder_verbose', False)
+                    dataset.activity_filter = getattr(args, 'activity', 'defense')  # Add activity filter
                     return dataset
                 
                 progress.console.print(f"[yellow]{'Warning':>12}[/] TSV file found but header doesn't match DefenseFinder format")
-                progress.console.print(f"[yellow]{'Found':>12}[/] columns: {', '.join(header)}")
-                progress.console.print(f"[yellow]{'Expected':>12}[/] Required columns for DefenseFinder metadata:")
-                progress.console.print(f"[yellow]{'Format':>12}[/] systems_tsv, genes_tsv, gff_file, fasta_file, fa_file")
-    
                 raise TypeError(
-                    f"\nDefenseFinder TSV error for {input_file}"
-                    f"\nPlease check that your TSV file has the required column headers."
+                    f"DefenseFinder TSV error for {input_file}. "
+                    f"Please check that your TSV file has the required column headers."
                 )
-
 
     # traditional file type detection (GenBank, GFF, etc.)
     extension_mapping = {
@@ -292,12 +328,9 @@ def create_dataset(
     
     dataset_classes = set()
     unsupported_files = []
-    tsv_files = []
     
-    for file_path in input_files:
-        if file_path.suffix.lower() == '.tsv':
-            tsv_files.append(file_path)
-        elif file_path.suffix.lower() in extension_mapping:
+    for file_path in args.input:
+        if file_path.suffix.lower() in extension_mapping:
             dataset_classes.add(extension_mapping[file_path.suffix.lower()])
         else:
             unsupported_files.append(file_path)
@@ -309,11 +342,10 @@ def create_dataset(
         )
     
     if len(dataset_classes) > 1:
-        raise TypeError(
-            f"Mixed file types detected. All files must be compatible with the same dataset type."
-        )
+        raise TypeError("Mixed file types detected. All files must be compatible with the same dataset type.")
     
     return dataset_classes.pop()()
+
 
 def get_protein_representative(
     mmseqs: MMSeqs,
@@ -472,10 +504,8 @@ def main(argv: typing.Optional[typing.List[str]] = None) -> int:
 
         # create appropriate dataset handler
         dataset = create_dataset(
-            progress, 
-            args.input,
-            write_defense_systems=getattr(args, 'write_defense_systems', None), 
-            defense_finder_verbose=getattr(args, 'defense_finder_verbose', False)
+            progress=progress,
+            args=args
         )
 
         # extract raw sequences

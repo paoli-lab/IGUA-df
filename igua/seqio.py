@@ -196,6 +196,7 @@ class DefenseFinderDataset(BaseDataset):
         self.write_output: bool = False  # write output files to self.output_dir
         self.output_dir: typing.Optional[typing.Union[pathlib.Path, str]] = None  # output directory for writing files
         self.verbose: bool = False  # verbose output
+        self.activity_filter: str = "defense"
 
     def extract_sequences(
         self,
@@ -297,7 +298,8 @@ class DefenseFinderDataset(BaseDataset):
                     gff_file=gff_file,
                     fasta_file=fasta_file,
                     output_dir=strain_output_dir,
-                    strain_id=strain_id
+                    strain_id=strain_id,
+                    activity_filter=self.activity_filter 
                 )
                 
                 # write systems to output FASTA and record data
@@ -429,7 +431,8 @@ class DefenseFinderDataset(BaseDataset):
                     faa_file=faa_file,
                     fna_file=fna_file if fna_file.exists() else None,
                     output_dir=strain_output_dir,
-                    strain_id=strain_id
+                    strain_id=strain_id, 
+                    activity_filter=self.activity_filter
                 )
                 
                 # write proteins to output file and record sizes
