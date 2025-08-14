@@ -572,8 +572,6 @@ def main(argv: typing.Optional[typing.List[str]] = None) -> int:
                         progress.console.print(f"[bold yellow]{'Warning':>12}[/] No proteins extracted from defense systems")
                         progress.console.print(f"[bold yellow]{'Skipping':>12}[/] protein clustering due to empty protein file")
                         args.clustering = False
-                    else:
-                        progress.console.print(f"[bold green]{'Extracted':>12}[/] proteins to {proteins_faa} ({proteins_faa.stat().st_size} bytes)")
                         
                 except Exception as e:
                     progress.console.print(f"[bold red]{'Error':>12}[/] Failed to extract proteins: {e}")
@@ -596,7 +594,7 @@ def main(argv: typing.Optional[typing.List[str]] = None) -> int:
                 if is_defense_finder and hasattr(dataset, 'defense_metadata') and dataset.defense_metadata:
                     # double underscore for DefenseFinder 
                     prot_clusters["cluster_id"] = (
-                            prot_clusters["protein_id"].str.rsplit("__", n=1).str[0]
+                            prot_clusters["protein_id"].str.rsplit("@@", n=1).str[0]
                         )
                 else:
                     # traditional format: use single underscore delimiter

@@ -10,7 +10,6 @@ from typing import Dict, List, Tuple, Optional, Union, Any
 import rich.progress
 from rich.console import Console
 
-# TODO: fix progress bar integration
 # TODO: deduplicate fna/faa sequence extraction 
 # TODO: check memory usage of extractor 
 
@@ -37,6 +36,19 @@ class DefenseExtractor:
         self.write_output = write_output
         self.console = progress.console if progress else Console()
         self.verbose = verbose
+
+    def _get_unique_strain_id(self, strain_id: Optional[str]) -> str:
+        """Get or create a unique strain identifier"""
+        if strain_id:
+            # clean strain_id to avoid filesystem issues
+            clean_strain = strain_id.replace('/', '_').replace('\\', '_').replace(' ', '_')
+
+            return clean_strain
+        
+        # if None strain_id, generate a unique identifier
+        unique_ref = str(uuid.uuid4())[:8]
+        return unique_ref
+
 
     def extract_systems(
         self,
@@ -97,17 +109,47 @@ class DefenseExtractor:
                 progress.start()
             
             # load TSV files
-            # progress.update(task_setup, description="Reading TSV files")
             try:
                 systems_df = pd.read_csv(systems_tsv_file, sep='\t')
                 
+                # filter systems by activity if applicable
                 original_count = len(systems_df)
                 if activity_filter.lower() != "all":
                     if 'activity' in systems_df.columns:
                         systems_df = systems_df[systems_df['activity'].str.lower() == activity_filter.lower()]
                         filtered_count = len(systems_df)
+                        
+                # check for duplicate systems after activity filtering
+                # note: only complete duplicates are omitted
+                duplicate_mask = systems_df.duplicated(keep='first')
+                if duplicate_mask.any():
+                    duplicate_systems = systems_df[duplicate_mask]['sys_id'].tolist()
+                    n_duplicates = len(duplicate_systems)
+                    
+                    self.console.print(
+                        f"[bold yellow]{'Warning':>12}[/] {n_duplicates} duplicate system/s in strain [bold cyan]{strain_id}[/]: [cyan]{', '.join(duplicate_systems[:5])}{'...' if n_duplicates > 5 else ''}[/]"
+                    )
+                    
+                    self._log_error(
+                        "DUPLICATE_SYSTEMS_WARNING", 
+                        f"Found {n_duplicates} duplicate system IDs in systems TSV", 
+                        strain_id=strain_id, 
+                        files=files_dict,
+                        exception={
+                            "duplicate_sys_ids": duplicate_systems,
+                            "systems_tsv_file": str(systems_tsv_file),
+                            "total_systems": len(systems_df),
+                            "unique_systems": len(systems_df['sys_id'].unique())
+                        }
+                    )
+                    
+                    # duplicates: keep first occurrence
+                    systems_df = systems_df.drop_duplicates(keep='first')
+                
+                if activity_filter.lower() != "all":
+                    if 'activity' in systems_df.columns:
                         self.console.print(
-                            f"[bold green]{'Filtered':>12}[/] {original_count} systems to {filtered_count} "
+                            f"[bold green]{'Filtered':>12}[/] {original_count} systems to {len(systems_df)} "
                             f"([bold cyan]{activity_filter}[/] systems only)"
                         )
                     else:
@@ -119,6 +161,7 @@ class DefenseExtractor:
 
 
                 genes_df = pd.read_csv(genes_tsv_file, sep='\t')
+
             except Exception as e:
                 self._log_error(
                     "TSV_ERROR", "Failed to read TSV files", 
@@ -139,7 +182,6 @@ class DefenseExtractor:
                 return {}
             
             # set up GFF database with in-memory fallback
-            # progress.update(task_setup, description="Creating GFF database")
             try:
                 if gff_cache_dir:
                     os.makedirs(gff_cache_dir, exist_ok=True)
@@ -163,7 +205,7 @@ class DefenseExtractor:
                 db_path = ":memory:"  # reset to in-memory in case of exception
                 try:
                     db = gffutils.create_db(
-                        str(gff_file),  # Convert Path to string here
+                        str(gff_file),  # convert Path to string here
                         dbfn=":memory:", 
                         merge_strategy='create_unique',
                         id_spec=['ID', 'Name', 'locus_tag', 'gene']
@@ -178,7 +220,9 @@ class DefenseExtractor:
             
             for _, system in systems_df.iterrows():
                 sys_id = system['sys_id']
-                
+                clean_strain = self._get_unique_strain_id(strain_id)
+                unique_sys_id = f"{clean_strain}@{sys_id}"
+
                 system_files = {**files_dict, "system_id": sys_id}
                     
                 system_genes = genes_df[genes_df['sys_id'] == sys_id].sort_values('hit_pos') 
@@ -207,7 +251,6 @@ class DefenseExtractor:
                             }
                         )
                         self.console.print(f"[bold red]Error:[/] Could not find beginning or ending gene for system {sys_id}")
-                        # progress.advance(task_systems)
                         continue
                     
                     beg_hit_id = system['sys_beg']
@@ -227,7 +270,6 @@ class DefenseExtractor:
                         strain_id=strain_id, system_id=sys_id, files=system_files, exception=e
                     )
                     self.console.print(f"[bold red]Error:[/] Failed to get gene data for system {sys_id}: {str(e)}")
-                    # progress.advance(task_systems)
                     continue
                 
                 # skip if coordinates invalid
@@ -242,7 +284,6 @@ class DefenseExtractor:
                         }
                     )
                     self.console.print(f"[bold yellow]{'Warning':>12}[/] Missing coordinates for system {sys_id}")
-                    # progress.advance(task_systems)
                     continue
                     
                 if start_seq_id != end_seq_id:
@@ -252,7 +293,6 @@ class DefenseExtractor:
                         exception={"start_seq_id": start_seq_id, "end_seq_id": end_seq_id}
                     )
                     self.console.print(f"[bold yellow]{'Warning':>12}[/] System {sys_id} spans multiple sequences")
-                    # progress.advance(task_systems)
                     continue
                     
                 seq_id = start_seq_id
@@ -263,7 +303,7 @@ class DefenseExtractor:
                     self.console.print(f"[bold yellow]{'Warning':>12}[/] System {sys_id} coordinates swapped: start > end.")
 
                     
-                # raise warning for suspiciously large regions
+                # raise warning for suspiciously large regions >1e4 
                 region_size = system_end - system_start + 1
                 if region_size > 1e4:
                     self._log_error(
@@ -279,7 +319,7 @@ class DefenseExtractor:
                         sequence = genome_seq[max(0, system_start-1):min(len(genome_seq), system_end)]
                         sequence_length = len(sequence)
                         
-                        results[sys_id] = {
+                        results[unique_sys_id] = {
                             "sequence": str(sequence),
                             "length": sequence_length,
                             "seq_id": seq_id,
@@ -287,15 +327,17 @@ class DefenseExtractor:
                             "end": system_end,
                             "type": system['type'],
                             "subtype": system['subtype'] if 'subtype' in system and pd.notna(system['subtype']) else None,
-                            "strain_id": strain_id
+                            "strain_id": strain_id,
+                            "sys_id": sys_id,
+                            "unique_sys_id": unique_sys_id
                         }
                         
                         if self.write_output and output_dir:
-                            output_file = os.path.join(str(output_dir), f"{sys_id}.fasta")
+                            output_file = os.path.join(str(output_dir), f"{unique_sys_id}.fasta")
                             with open(output_file, "w") as out:
-                                out.write(f">{sys_id} Type:{system['type']} Subtype:{system['subtype'] if 'subtype' in system and pd.notna(system['subtype']) else 'NA'} Length:{sequence_length}bp\n")
+                                out.write(f">{unique_sys_id} OriginalID:{sys_id} Strain:{strain_id} Type:{system['type']} Subtype:{system['subtype'] if 'subtype' in system and pd.notna(system['subtype']) else 'NA'} Length:{sequence_length}bp\n")
                                 out.write(str(sequence) + "\n")
-                            results[sys_id]["file_path"] = output_file
+                            results[unique_sys_id]["file_path"] = output_file
                             
                         if self.verbose: 
                             self.console.print(f"[bold blue]{'Extracted':>22}[/] genomic sequence for [cyan]{sys_id}[/] system ({sequence_length} bp)")
@@ -396,10 +438,22 @@ class DefenseExtractor:
                 
             try:
                 systems_df = pd.read_csv(systems_tsv_file, sep='\t')
+
                 # filter systems by activity if applicable 
                 if activity_filter.lower() != "all":
                     if 'activity' in systems_df.columns:
                         systems_df = systems_df[systems_df['activity'].str.lower() == activity_filter.lower()]
+                
+                # check for duplicate systems after activity filtering (silent removal)
+                duplicate_mask = systems_df.duplicated(keep='first')
+                if duplicate_mask.any():
+                    duplicate_systems = systems_df[duplicate_mask]['sys_id'].tolist()
+                    n_duplicates = len(duplicate_systems)
+                    
+                    # duplicates: keep first occurrence
+                    # warnings have already been logged
+                    systems_df = systems_df.drop_duplicates(keep='first')
+
                 genes_df = pd.read_csv(genes_tsv_file, sep='\t')
             except Exception as e:
                 self._log_error(
@@ -433,13 +487,15 @@ class DefenseExtractor:
             
             for _, system in systems_df.iterrows():
                 sys_id = system['sys_id']
-                
+                clean_strain = self._get_unique_strain_id(strain_id)
+                unique_sys_id = f"{clean_strain}@{sys_id}"
+    
                 result = self._extract_sequences_for_system(
-                    sys_id, genes_df, faa_index, fna_index, output_dir, strain_id, progress
+                    unique_sys_id, genes_df, faa_index, fna_index, output_dir, strain_id, sys_id, progress
                 )
                 
                 if result:
-                    results[sys_id] = result
+                    results[unique_sys_id] = result
                 
         except Exception as e:
             self._log_error(
@@ -466,8 +522,9 @@ class DefenseExtractor:
         fna_index: Any, 
         output_dir: Optional[Union[pathlib.Path, str]],
         strain_id: Optional[str],
+        original_sys_id: str = "",
         progress: Optional[rich.progress.Progress] = None,
-        verbose: bool = False
+        verbose: bool = False, 
     ) -> Dict[str, Any]:
         """Extract gene sequences for a single defense system"""
         # file paths for error logging
@@ -480,7 +537,8 @@ class DefenseExtractor:
             }) # type: ignore
         
         # filter only genes for this system
-        system_genes = genes_df[genes_df['sys_id'] == system_id]
+        lookup_sys_id = original_sys_id or system_id.split('@')[-1] # original sys_id
+        system_genes = genes_df[genes_df['sys_id'] == lookup_sys_id] 
         
         if system_genes.empty:
             self._log_error(
@@ -532,14 +590,15 @@ class DefenseExtractor:
 
                         # create modified ID with system for downstream processing
                         # retains system and protein information 
-                        modified_id = f"{system_id}__{protein_id}"
-                        modified_desc = f"{modified_id} [system={system_id}]"
+                        modified_id = f"{system_id}@@{protein_id}"
+                        modified_desc = f"{modified_id} [system={system_id}] [protein={protein_id}]"
                         
                         result["proteins"][protein_id] = {
                             "sequence": str(record.seq),
                             "length": len(record.seq),
                             "system_id": system_id,
-                            "id": modified_id
+                            "protein_id": protein_id,
+                            "unique_protein_id": modified_id
                         }
                         
                         self._write_fasta(out_handle, modified_id, modified_desc, str(record.seq))
@@ -570,17 +629,18 @@ class DefenseExtractor:
                     
                     for seq_id in fna_matching:
                         record = fna_index[seq_id]
+                        nucleotide_id = self._extract_protein_id(seq_id, hit_ids)
                         
-                        gene_id = self._extract_protein_id(seq_id, hit_ids)
+                        # create modified ID with system for downstream processing
+                        modified_id = f"{system_id}@@{nucleotide_id}" 
+                        modified_desc = f"{modified_id} [system={system_id}] [nucleotide={nucleotide_id}]"
                         
-                        modified_id = f"{system_id}__{gene_id}"
-                        modified_desc = f"{modified_id} [system={system_id}]"
-                        
-                        result["nucleotides"][gene_id] = {
+                        result["nucleotides"][nucleotide_id] = {
                             "sequence": str(record.seq),
                             "length": len(record.seq),
                             "system_id": system_id,
-                            "id": modified_id
+                            "nucleotide_id": nucleotide_id,
+                            "unique_nucleotide_id": modified_id
                         }
                         
                         self._write_fasta(out_handle, modified_id, modified_desc, str(record.seq))

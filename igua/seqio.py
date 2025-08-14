@@ -303,19 +303,15 @@ class DefenseFinderDataset(BaseDataset):
                 )
                 
                 # write systems to output FASTA and record data
-                for sys_id, system in systems.items():
+                for unique_sys_id, system in systems.items():
                     sequence = system["sequence"]
                     length = system["length"]
-                    
-                    # add strain ID to system ID if available
-                    full_sys_id = f"{strain_id}_{sys_id}" if strain_id else sys_id
-                    
+                                        
                     # write to FASTA file
-                    self.write_fasta(dst, full_sys_id, sequence)
+                    self.write_fasta(dst, unique_sys_id, sequence)
                     
-                    # record for DataFrame
                     file_path = system.get("file_path", str(fasta_file))
-                    data.append((full_sys_id, length, file_path))
+                    data.append((unique_sys_id, length, file_path))
                 
                 progress.update(task, advance=1)
             
@@ -438,25 +434,22 @@ class DefenseFinderDataset(BaseDataset):
                 # write proteins to output file and record sizes
                 # filter by representatives at this stage 
                 for sys_id, system in gene_data.items():
-                    # add strain ID to system ID if available
-                    full_sys_id = f"{strain_id}_{sys_id}" if strain_id else sys_id
                     
                     # skip if not in representatives 
-                    if representatives and full_sys_id not in representatives and sys_id not in representatives:
-                        # debug 
-                        # progress.console.print(f"[bold yellow]{'Skipping':>12}[/] {full_sys_id} not in representatives")
+                    if representatives and sys_id not in representatives:
                         continue
 
                     # write proteins from representative clusters
                     for prot_id, protein in system.get("proteins", {}).items():
-                        seq_id = f"{full_sys_id}__{prot_id}"
+                        # unique protein ID already created by DefenseExtractor
+                        unique_protein_id = protein.get("unique_protein_id", f"{sys_id}@@{prot_id}")
                         sequence = protein["sequence"]
                         
                         # write to output
-                        self.write_fasta(dst, seq_id, sequence)
+                        self.write_fasta(dst, unique_protein_id, sequence)
                         
                         # record size
-                        protein_sizes[seq_id] = len(sequence)
+                        protein_sizes[unique_protein_id] = len(sequence)
 
                         # debug 
                         # progress.console.print(f"[bold #ff875f]{'Writing':>12}[/] {seq_id}")
