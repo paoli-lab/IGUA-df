@@ -257,43 +257,6 @@ def create_dataset(
 ) -> BaseDataset:
     """Constructor for Dataset, handles inputs based on input file types and arguments"""
     
-    # check for individual DefenseFinder files first
-    individual_args = [
-        args.defense_systems_tsv, 
-        args.defense_genes_tsv, 
-        args.gff, 
-        args.genome,
-        args.protein_file,
-    ]
-    
-    if any(individual_args):
-        # individual DefenseFinder file mode
-        if not all(individual_args):
-            raise ValueError(
-                "Individual DefenseFinder mode requires ALL of: "
-                "--defense-systems-tsv, --defense-genes-tsv, --gff, --genome, --protein-file"
-            )
-        
-        progress.console.print(f"[bold blue]{'Using':>12}[/] individual DefenseFinder files")
-        dataset = DefenseFinderDataset()
-        
-        dataset.defense_systems_tsv = args.defense_systems_tsv
-        dataset.defense_genes_tsv = args.defense_genes_tsv
-        dataset.gff_file = args.gff
-        dataset.genome_file = args.genome
-        dataset.protein_file = args.protein_file
-        dataset.gene_file = getattr(args, 'gene_file', None)
-        dataset.write_output = getattr(args, 'write_defense_systems', None) is not None
-        dataset.output_dir = getattr(args, 'write_defense_systems', None)
-        dataset.verbose = getattr(args, 'defense_finder_verbose', False)
-        dataset.activity_filter = getattr(args, 'activity', 'defense') 
-        
-        return dataset
-    
-    # check for metadata TSV files
-    if not args.input:
-        raise ValueError("Either input files (-i) or individual DefenseFinder files must be provided")
-    
     for input_file in args.input:
         if input_file.suffix.lower() == ".tsv":
             with open(input_file, "r") as f:

@@ -276,8 +276,9 @@ class DefenseFinderDataset(BaseDataset):
                 fasta_file = pathlib.Path(row["fasta_file"])
                 
                 missing_files = []
-                for f, name in [(systems_tsv, "systems_tsv"), (genes_tsv, "genes_tsv"), 
-                               (gff_file, "gff_file"), (fasta_file, "fasta_file")]:
+                for f, name in [
+                    (systems_tsv, "systems_tsv"), (genes_tsv, "genes_tsv"),(gff_file, "gff_file"), (fasta_file, "fasta_file")
+                ]:
                     if not f.exists():
                         missing_files.append(f"{name}: {f}")
                 
