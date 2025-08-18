@@ -15,7 +15,8 @@ from .mmseqs import MMSeqs
 from .mmseqs import Database
 from .defense_extractor import DefenseExtractor
 
-
+# from memory_profiler import profile
+from .profiler import profiler
 
 _GZIP_MAGIC = b'\x1f\x8b'
 
@@ -243,7 +244,7 @@ class DefenseFinderDataset(BaseDataset):
             # clean up temporary directory if created
             if temp_dir:
                 temp_dir.cleanup()
-    
+    @profiler.profile_function
     def _process_defense_files_from_tsv(
         self,
         progress: rich.progress.Progress,
@@ -371,7 +372,7 @@ class DefenseFinderDataset(BaseDataset):
             # Clean up temporary directory if created
             if temp_dir:
                 temp_dir.cleanup()
-    
+    @profiler.profile_function
     def _extract_proteins_from_tsv(
         self,
         progress: rich.progress.Progress,

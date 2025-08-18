@@ -10,6 +10,9 @@ from typing import Dict, List, Tuple, Optional, Union, Any
 import rich.progress
 from rich.console import Console
 
+# from memory_profiler import profile
+from .profiler import profiler
+
 # TODO: deduplicate fna/faa sequence extraction 
 # TODO: check memory usage of extractor 
 
@@ -49,7 +52,7 @@ class DefenseExtractor:
         unique_ref = str(uuid.uuid4())[:8]
         return unique_ref
 
-
+    @profiler.profile_function
     def extract_systems(
         self,
         systems_tsv_file: pathlib.Path, 
@@ -382,6 +385,7 @@ class DefenseExtractor:
                 
         return results
         
+    @profiler.profile_function
     def extract_gene_sequences(
         self,
         systems_tsv_file: Union[pathlib.Path, str], 

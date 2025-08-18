@@ -36,6 +36,8 @@ from .seqio import BaseDataset, GenBankDataset, DefenseFinderDataset, GFFDataset
 from .mmseqs import MMSeqs, Database, Clustering
 from .hca import manhattan, linkage
 
+# from memory_profiler import profile, memory_usage
+from .profiler import profiler
 
 _PARAMS_NUC1 = dict(
     e_value=0.001,
@@ -251,6 +253,7 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+@profiler.profile_function
 def create_dataset(
     progress: rich.progress.Progress,
     args: argparse.Namespace,
@@ -322,6 +325,7 @@ def get_protein_representative(
     subdb.to_fasta(fasta_path)
 
 
+
 def make_compositions(
     progress: rich.progress.Progress,
     protein_clusters: pandas.DataFrame,
@@ -353,7 +357,7 @@ def make_compositions(
         )
     )
 
-
+@profiler.profile_function
 def compute_distances(
     progress: rich.progress.Progress,
     compositions: scipy.sparse.csr_matrix,
@@ -386,6 +390,7 @@ def compute_distances(
     # check distances are in [0, 1]
     return numpy.clip(distance_vector, 0.0, 1.0, out=distance_vector)
 
+@profiler.profile_function
 def main(argv: typing.Optional[typing.List[str]] = None) -> int:
     # build parser and get arguments
     parser = build_parser()
