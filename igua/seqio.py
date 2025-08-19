@@ -15,7 +15,6 @@ from .mmseqs import MMSeqs
 from .mmseqs import Database
 from .defense_extractor import DefenseExtractor
 
-# from memory_profiler import profile
 from .profiler import profiler
 
 _GZIP_MAGIC = b'\x1f\x8b'
@@ -46,6 +45,7 @@ class BaseDataset(abc.ABC):
         ) -> typing.Dict[str, int]:
         pass
     
+    # @profiler.profile_function
     def write_fasta(self, file: typing.TextIO, name: str, sequence: str) -> None:
         file.write(">{}\n".format(name))
         file.write(sequence)
@@ -199,6 +199,7 @@ class DefenseFinderDataset(BaseDataset):
         self.verbose: bool = False  # verbose output
         self.activity_filter: str = "defense"
 
+    @profiler.profile_function
     def extract_sequences(
         self,
         progress: rich.progress.Progress,
@@ -244,6 +245,7 @@ class DefenseFinderDataset(BaseDataset):
             # clean up temporary directory if created
             if temp_dir:
                 temp_dir.cleanup()
+
     @profiler.profile_function
     def _process_defense_files_from_tsv(
         self,
@@ -269,7 +271,7 @@ class DefenseFinderDataset(BaseDataset):
             
             for _, row in df.iterrows():
                 strain_id = row.get("strain_id", None)
-                progress.update(task, description=f"[bold blue]{'Processing':>9}[/] strain: {strain_id}")
+                progress.update(task, description=f"[bold blue]{'Processing':>9}[/] strain: [bold cyan]{strain_id}")
                 
                 systems_tsv = pathlib.Path(row["systems_tsv"])
                 genes_tsv = pathlib.Path(row["genes_tsv"])
@@ -325,7 +327,8 @@ class DefenseFinderDataset(BaseDataset):
             data=data,
             columns=["cluster_id", "cluster_length", "filename"]
         ).set_index("cluster_id")
-    
+
+    @profiler.profile_function
     def extract_proteins(
         self,
         progress: rich.progress.Progress,
@@ -399,7 +402,7 @@ class DefenseFinderDataset(BaseDataset):
             
             for _, row in df.iterrows():
                 strain_id = row.get("strain_id", None)
-                progress.update(task, description=f"[bold blue]{'Processing':>9}[/] strain: {strain_id}")
+                progress.update(task, description=f"[bold blue]{'Processing':>9}[/] strain: [bold cyan]{strain_id}")
                 
                 systems_tsv = pathlib.Path(row["systems_tsv"])
                 genes_tsv = pathlib.Path(row["genes_tsv"])

@@ -10,12 +10,9 @@ from typing import Dict, List, Tuple, Optional, Union, Any
 import rich.progress
 from rich.console import Console
 
-# from memory_profiler import profile
 from .profiler import profiler
 
 # TODO: deduplicate fna/faa sequence extraction 
-# TODO: check memory usage of extractor 
-
 
 class DefenseExtractor:
     """
@@ -729,6 +726,7 @@ class DefenseExtractor:
         # Default to sequence ID if no match
         return seq_id
     
+    # @profiler.profile_function
     def _write_fasta(self, handle, seq_id, description, sequence):
         """Write a sequence in FASTA format"""
         handle.write(f">{description}\n")

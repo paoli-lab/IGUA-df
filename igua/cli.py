@@ -36,8 +36,8 @@ from .seqio import BaseDataset, GenBankDataset, DefenseFinderDataset, GFFDataset
 from .mmseqs import MMSeqs, Database, Clustering
 from .hca import manhattan, linkage
 
-# from memory_profiler import profile, memory_usage
 from .profiler import profiler
+import time 
 
 _PARAMS_NUC1 = dict(
     e_value=0.001,
@@ -96,6 +96,14 @@ def build_parser() -> argparse.ArgumentParser:
         type=int,
         default=os.cpu_count(),
         metavar="N",
+    )
+    parser.add_argument(
+        "--profile-memory", 
+        help="Enable detailed memory profiling. Choose a level of verbosity from `quiet` (summary table, default) or `verbose` (print memory usage every time a function is called)", 
+        nargs="?",
+        const="quiet",
+        default=None,
+        choices={"quiet", "verbose"}
     )
 
     group_input = parser.add_argument_group(
@@ -397,6 +405,13 @@ def main(argv: typing.Optional[typing.List[str]] = None) -> int:
     if not isinstance(argcomplete, ImportError):
         argcomplete.autocomplete(parser)
     args = parser.parse_args(argv)
+    
+    if args.profile_memory:
+        os.environ['IGUA_PROFILE'] = '1'
+        if args.profile_memory == 'verbose':
+            os.environ['IGUA_VERBOSE'] = '1'
+        profiler.enabled = True
+        profiler.start_time = time.time()
 
     if args.workdir is None:
         workdir = pathlib.Path(tempfile.mkdtemp())
@@ -709,5 +724,7 @@ def main(argv: typing.Optional[typing.List[str]] = None) -> int:
             progress.console.print(
                 f"[bold green]{'Saved':>12}[/] protein features to {str(args.features)!r}"
             )
+        if profiler: 
+            profiler.report()
 
     return 0
