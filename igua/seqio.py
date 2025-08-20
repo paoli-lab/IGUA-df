@@ -5,6 +5,7 @@ import pathlib
 import tempfile
 import gzip
 import warnings
+import gc
 
 import Bio.Seq
 import gb_io
@@ -264,69 +265,94 @@ class DefenseFinderDataset(BaseDataset):
                 verbose=self.verbose
             )
         
-        # iterate over each strain/genome 
-        data = []
+        # process in small chunks to minimize memory usage
+        chunk_size = 5
+        all_data = []
+
         with open(output, "w") as dst:
             task = progress.add_task(f"[bold blue]{'Processing':>9}[/] defense systems", total=len(df))
             
-            for _, row in df.iterrows():
-                strain_id = row.get("strain_id", None)
-                progress.update(task, description=f"[bold blue]{'Processing':>9}[/] strain: [bold cyan]{strain_id}")
+            for chunk_start in range(0, len(df), chunk_size):
+                chunk_end = min(chunk_start + chunk_size, len(df))
+                df_chunk = df.iloc[chunk_start:chunk_end]
                 
-                systems_tsv = pathlib.Path(row["systems_tsv"])
-                genes_tsv = pathlib.Path(row["genes_tsv"])
-                gff_file = pathlib.Path(row["gff_file"])
-                fasta_file = pathlib.Path(row["fasta_file"])
-                
-                missing_files = []
-                for f, name in [
-                    (systems_tsv, "systems_tsv"), (genes_tsv, "genes_tsv"),(gff_file, "gff_file"), (fasta_file, "fasta_file")
-                ]:
-                    if not f.exists():
-                        missing_files.append(f"{name}: {f}")
-                
-                if missing_files:
-                    progress.console.print(f"[bold yellow]{'Missing':>12}[/] files for {strain_id}: {', '.join(missing_files)}")
-                    raise FileNotFoundError(f"Missing required files: {', '.join(missing_files)}")
-                
-                # extract systems
-                strain_output_dir = None
-                if self.write_output and self.output_dir:
-                    strain_output_dir = self.output_dir / (strain_id if strain_id else "unknown")
-                    strain_output_dir.mkdir(parents=True, exist_ok=True)
-                
-                # extract genomic sequences for phage defense systems
-                systems = extractor.extract_systems(
-                    systems_tsv_file=systems_tsv,
-                    genes_tsv_file=genes_tsv,
-                    gff_file=gff_file,
-                    fasta_file=fasta_file,
-                    output_dir=strain_output_dir,
-                    strain_id=strain_id,
-                    activity_filter=self.activity_filter 
-                )
-                
-                # write systems to output FASTA and record data
-                for unique_sys_id, system in systems.items():
-                    sequence = system["sequence"]
-                    length = system["length"]
-                                        
-                    # write to FASTA file
-                    self.write_fasta(dst, unique_sys_id, sequence)
+                chunk_data = []
+                for _, row in df_chunk.iterrows():
+                    strain_id = row.get("strain_id", None)
+                    progress.update(task, description=f"[bold blue]{'Processing':>9}[/] strain: [bold cyan]{strain_id}")
                     
-                    file_path = system.get("file_path", str(fasta_file))
-                    data.append((unique_sys_id, length, file_path))
+                    systems_tsv = pathlib.Path(row["systems_tsv"])
+                    genes_tsv = pathlib.Path(row["genes_tsv"])
+                    gff_file = pathlib.Path(row["gff_file"])
+                    fasta_file = pathlib.Path(row["fasta_file"])
+                    
+                    missing_files = []
+                    for f, name in [
+                        (systems_tsv, "systems_tsv"), (genes_tsv, "genes_tsv"),(gff_file, "gff_file"), (fasta_file, "fasta_file")
+                    ]:
+                        if not f.exists():
+                            missing_files.append(f"{name}: {f}")
+                    
+                    if missing_files:
+                        progress.console.print(f"[bold yellow]{'Missing':>12}[/] files for {strain_id}: {', '.join(missing_files)}")
+                        progress.update(task, advance=1)
+                        continue
+                    
+                    # extract systems for this strain only
+                    strain_output_dir = None
+                    if self.write_output and self.output_dir:
+                        strain_output_dir = pathlib.Path(self.output_dir) / (strain_id if strain_id else "unknown")
+                        strain_output_dir.mkdir(parents=True, exist_ok=True)
+                    
+                    try:
+                        systems = extractor.extract_systems(
+                            systems_tsv_file=systems_tsv,
+                            genes_tsv_file=genes_tsv,
+                            gff_file=gff_file,
+                            fasta_file=fasta_file,
+                            output_dir=strain_output_dir,
+                            strain_id=strain_id,
+                            activity_filter=self.activity_filter 
+                        )
+                        
+                        # process systems immediately
+                        # don't store sequences
+                        for unique_sys_id, system in systems.items():
+                            sequence = system["sequence"]
+                            length = system["length"]
+                            file_path = system.get("file_path", str(fasta_file))
+                            
+                            self.write_fasta(dst, unique_sys_id, sequence)
+                            
+                            # only store metadata, not sequences
+                            chunk_data.append((unique_sys_id, length, file_path))
+                        
+                        del systems
+                        
+                    except Exception as e:
+                        progress.console.print(f"[bold red]{'Error':>12}[/] processing {strain_id}: {e}")
+                        
+                    progress.update(task, advance=1)
                 
-                progress.update(task, advance=1)
+                all_data.extend(chunk_data)
+                del chunk_data, df_chunk
+                gc.collect()
             
             progress.remove_task(task)
         
         # create and return DataFrame
-        progress.console.print(f"[bold green]{'Extracted':>12}[/] {len(data)} systems in total from {df.shape[0]} strains/genomes")
-        return pandas.DataFrame(
-            data=data,
+        progress.console.print(f"[bold green]{'Extracted':>12}[/] {len(all_data)} systems in total from {df.shape[0]} strains/genomes")
+        
+        # create pd.DataFrame and immediately clean up data
+        result_df = pandas.DataFrame(
+            data=all_data,
             columns=["cluster_id", "cluster_length", "filename"]
         ).set_index("cluster_id")
+        
+        del all_data
+        gc.collect()
+        
+        return result_df
 
     @profiler.profile_function
     def extract_proteins(

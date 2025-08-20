@@ -7,6 +7,7 @@ import gffutils
 import io
 from Bio import SeqIO
 from typing import Dict, List, Tuple, Optional, Union, Any
+import gc
 import rich.progress
 from rich.console import Console
 
@@ -103,6 +104,10 @@ class DefenseExtractor:
         )
         
         results = {}
+        systems_df = None
+        genes_df = None
+        genome_dict = None
+        db = None
         
         try:
             if not using_external_progress:
@@ -159,7 +164,6 @@ class DefenseExtractor:
                 else:
                     self.console.print(f"[bold blue]{'Processing':>12}[/] all {original_count} systems (no activity filter)")
 
-
                 genes_df = pd.read_csv(genes_tsv_file, sep='\t')
 
             except Exception as e:
@@ -170,7 +174,7 @@ class DefenseExtractor:
                 self.console.print(f"[bold red]Error:[/] Failed to read TSV files: {str(e)}")
                 return {}
             
-            # load genome
+            # load genome - use index instead of loading entire file
             try:
                 genome_dict = SeqIO.to_dict(SeqIO.parse(fasta_file, "fasta"))
             except Exception as e:
@@ -218,6 +222,7 @@ class DefenseExtractor:
                     self.console.print(f"[bold red]Error:[/] Failed to create GFF database: {str(e2)}")
                     return {}
             
+            systems_processed = 0
             for _, system in systems_df.iterrows():
                 sys_id = system['sys_id']
                 clean_strain = self._get_unique_strain_id(strain_id)
@@ -342,6 +347,8 @@ class DefenseExtractor:
                         if self.verbose: 
                             self.console.print(f"[bold blue]{'Extracted':>22}[/] genomic sequence for [cyan]{sys_id}[/] system ({sequence_length} bp)")
                         
+                        del sequence, genome_seq
+                        
                     except Exception as e:
                         self._log_error(
                             "SEQUENCE_EXTRACTION_ERROR", "Failed to extract or write sequence", 
@@ -355,7 +362,10 @@ class DefenseExtractor:
                     )
                     self.console.print(f"[bold red]{'Error':>12}[/] Sequence {seq_id} not found in genome")
                     
-                # progress.advance(task_systems)
+                systems_processed += 1
+                del system_genes
+                if systems_processed % 10 == 0:
+                    gc.collect()
 
             self.console.print(f"[bold green]{'Extracted':>12}[/] {len(results)} defense systems for [bold cyan]{strain_id}[/]")
             
@@ -367,6 +377,15 @@ class DefenseExtractor:
             self.console.print(f"[bold red]Fatal Error:[/] {str(e)}")
             
         finally:
+            if systems_df is not None:
+                del systems_df
+            if genes_df is not None:
+                del genes_df  
+            if genome_dict is not None:
+                del genome_dict
+            if db is not None:
+                del db
+            
             # clean up temp database
             if db_path != ":memory:" and os.path.exists(db_path) and (not gff_cache_dir or unique_id in db_path):
                 try:
@@ -379,6 +398,8 @@ class DefenseExtractor:
                 
             if not using_external_progress:
                 progress.stop()
+                
+            gc.collect()
                 
         return results
         
