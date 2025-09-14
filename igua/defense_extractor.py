@@ -105,118 +105,108 @@ class DefenseExtractor:
             else:
                 self.console.print(f"[bold blue]{'Processing':>12}[/] all {original_count} systems (no activity filter)")
 
-            genes_df = pd.read_csv(genes_tsv_file, sep='\t')
-            return systems_df, genes_df
-            
-        except Exception as e:
-            self._log_error(
-                "TSV_ERROR", "Failed to read TSV files", 
-                strain_id=strain_id, files=files_dict, exception=e
-            )
-            self.console.print(f"[bold red]Error:[/] Failed to read TSV files: {str(e)}")
-            return None, None
 
-    def _setup_gff_database(
-        self, 
-        gff_file: pathlib.Path, 
-        gff_cache_dir: Optional[pathlib.Path],
-        unique_id: str,
-        strain_id: Optional[str],
-        files_dict: Dict[str, Any]
-    ) -> Tuple[Any, str]:
-        """Set up GFF database with in-memory fallback"""
-        db_path = ":memory:"
-        
-        try:
-            if gff_cache_dir:
-                os.makedirs(gff_cache_dir, exist_ok=True)
-                db_path = os.path.join(str(gff_cache_dir), f"{os.path.basename(str(gff_file))}_{unique_id}.db")
-            else:
-                db_path = os.path.join(tempfile.gettempdir(), f"gff_temp_{unique_id}.db")
-                
-            db = gffutils.create_db(
-                str(gff_file),  
-                dbfn=db_path, 
-                force=True, 
-                merge_strategy='create_unique',
-                id_spec=['ID', 'Name', 'locus_tag', 'gene']
-            )
-            return db, db_path
+                genes_df = pd.read_csv(genes_tsv_file, sep='\t')
+
+            except Exception as e:
+                self._log_error(
+                    "TSV_ERROR", "Failed to read TSV files", 
+                    strain_id=strain_id, files=files_dict, exception=e
+                )
+                self.console.print(f"[bold red]Error:[/] Failed to read TSV files: {str(e)}")
+                return {}
             
-        except Exception as e:
-            self._log_error(
-                "GFF_ERROR", "Failed to create GFF database, falling back to in-memory", 
-                strain_id=strain_id, files=files_dict, exception=e
-            )
-            self.console.print(f"[bold blue]{'Using':>12}[/] in-memory database")
-            db_path = ":memory:"
-            
+            # load genome
             try:
+                genome_dict = SeqIO.to_dict(SeqIO.parse(fasta_file, "fasta"))
+            except Exception as e:
+                self._log_error(
+                    "FASTA_ERROR", "Failed to load genome FASTA", 
+                    strain_id=strain_id, files=files_dict, exception=e
+                )
+                self.console.print(f"[bold red]Error:[/] Failed to load genome: {str(e)}")
+                return {}
+            
+            # set up GFF database with in-memory fallback
+            try:
+                if gff_cache_dir:
+                    os.makedirs(gff_cache_dir, exist_ok=True)
+                    db_path = os.path.join(str(gff_cache_dir), f"{os.path.basename(str(gff_file))}_{unique_id}.db")
+                else:
+                    db_path = os.path.join(tempfile.gettempdir(), f"gff_temp_{unique_id}.db")
+                    
                 db = gffutils.create_db(
-                    str(gff_file),
-                    dbfn=":memory:", 
+                    str(gff_file),  
+                    dbfn=db_path, 
+                    force=True, 
                     merge_strategy='create_unique',
-                    id_spec=['ID', 'Name', 'locus_tag', 'gene']
+                    # widen id_spec to include more attributes for robust matching
+                    id_spec=['ID', 'Name', 'gbkey', 'gene', 'gene_biotype', 'locus_tag', 'old_locus_tag']
                 )
-                return db, db_path
-                
-            except Exception as e2:
+            except Exception as e:
                 self._log_error(
-                    "GFF_FATAL_ERROR", "Failed to create in-memory GFF database", 
-                    strain_id=strain_id, files=files_dict, exception=e2
+                    "GFF_ERROR", "Failed to create GFF database, falling back to in-memory", 
+                    strain_id=strain_id, files=files_dict, exception=e
                 )
-                self.console.print(f"[bold red]Error:[/] Failed to create GFF database: {str(e2)}")
-                return None, db_path
+                self.console.print(f"[bold blue]{'Using':>12}[/] in-memory database")
+                db_path = ":memory:"  # reset to in-memory in case of exception
+                try:
+                    db = gffutils.create_db(
+                        str(gff_file),  # convert Path to string here
+                        dbfn=":memory:", 
+                        merge_strategy='create_unique',
+                        # widen id_spec to include more attributes for robust matching
+                        id_spec=['ID', 'Name', 'gbkey', 'gene', 'gene_biotype', 'locus_tag', 'old_locus_tag']
+                    )
+                except Exception as e2:
+                    self._log_error(
+                        "GFF_FATAL_ERROR", "Failed to create in-memory GFF database", 
+                        strain_id=strain_id, files=files_dict, exception=e2
+                    )
+                    self.console.print(f"[bold red]Error:[/] Failed to create GFF database: {str(e2)}")
+                    return {}
+            
+            for _, system in systems_df.iterrows():
+                sys_id = system['sys_id']
+                clean_strain = self._get_unique_strain_id(strain_id)
+                unique_sys_id = f"{clean_strain}@{sys_id}"
 
-    def _extract_single_system(
-        self,
-        system: pd.Series,
-        genes_df: pd.DataFrame,
-        genome_dict: Dict[str, Any],
-        db: Any,
-        output_dir: Optional[pathlib.Path],
-        strain_id: Optional[str],
-        files_dict: Dict[str, Any]
-    ) -> Optional[Dict[str, Any]]:
-        """Extract a single defense system"""
-        sys_id = system['sys_id']
-        clean_strain = self._get_unique_strain_id(strain_id)
-        unique_sys_id = f"{clean_strain}@{sys_id}"
-        system_files = {**files_dict, "system_id": sys_id}
-        
-        system_genes = genes_df[genes_df['sys_id'] == sys_id].sort_values('hit_pos') 
-        if system_genes.empty:
-            self._log_error(
-                "NO_GENES_ERROR", "No genes found for system", 
-                strain_id=strain_id, system_id=sys_id, files=system_files
-            )
-            self.console.print(f"[bold yellow]{'Warning':>12}[/] No genes found for system {sys_id}")
-            return None
-        
-        # beginning and ending gene
-        try:
-            beg_gene_mask = system_genes['hit_id'] == system['sys_beg']
-            end_gene_mask = system_genes['hit_id'] == system['sys_end']
-            
-            if not beg_gene_mask.any() or not end_gene_mask.any():
-                self._log_error(
-                    "GENE_NOT_FOUND", f"Beginning or ending gene not found in system genes", 
-                    strain_id=strain_id, system_id=sys_id, files=system_files,
-                    exception={
-                        "sys_beg": system['sys_beg'], 
-                        "sys_end": system['sys_end'],
-                        "available_hit_ids": list(system_genes['hit_id'])
-                    }
-                )
-                self.console.print(f"[bold red]Error:[/] Could not find beginning or ending gene for system {sys_id}")
-                return None
-            
-            beg_hit_id = system['sys_beg']
-            end_hit_id = system['sys_end']
-            
-            # get genomic coordinates from GFF database
-            start_coord, start_end, start_seq_id = self._find_gene_coordinates(db, beg_hit_id)
-            end_coord, end_end, end_seq_id = self._find_gene_coordinates(db, end_hit_id)
+                system_files = {**files_dict, "system_id": sys_id}
+                    
+                system_genes = genes_df[genes_df['sys_id'] == sys_id].sort_values('hit_pos') 
+                if system_genes.empty:
+                    self._log_error(
+                        "NO_GENES_ERROR", "No genes found for system", 
+                        strain_id=strain_id, system_id=sys_id, files=system_files
+                    )
+                    self.console.print(f"[bold yellow]{'Warning':>12}[/] No genes found for system {sys_id}")
+                    continue
+                
+                # beginning and ending genes
+                try:
+                    # directly access the start and end genes using 'sys_beg' and 'sys_end' from the systems tsv DefenseFinder output 
+                    beg_gene_mask = system_genes['hit_id'] == system['sys_beg']
+                    end_gene_mask = system_genes['hit_id'] == system['sys_end']
+                    
+                    if not beg_gene_mask.any() or not end_gene_mask.any():
+                        self._log_error(
+                            "GENE_NOT_FOUND", f"Beginning or ending gene not found in system genes", 
+                            strain_id=strain_id, system_id=sys_id, files=system_files,
+                            exception={
+                                "sys_beg": system['sys_beg'], 
+                                "sys_end": system['sys_end'],
+                                "available_hit_ids": list(system_genes['hit_id'])
+                            }
+                        )
+                        self.console.print(f"[bold red]Error:[/] Could not find beginning or ending gene for system {sys_id}")
+                        continue
+                    
+                    beg_hit_id = system['sys_beg']
+                    end_hit_id = system['sys_end']
+                    
+                    # get genomic coordinates from the GFF database
+                    start_coord, start_end, start_seq_id = self._find_gene_coordinates(db, beg_hit_id)
+                    end_coord, end_end, end_seq_id = self._find_gene_coordinates(db, end_hit_id)
 
             system_start = start_coord
             system_end = end_end
@@ -709,26 +699,100 @@ class DefenseExtractor:
             fna_matching = []
             
             if faa_index is not None:
-                faa_matching = [
-                    seq_id for seq_id in faa_index if any(hit_id in seq_id for hit_id in hit_ids)
-                ]
+                faa_matching = self._find_matching_sequences(faa_index, hit_ids, "protein")
+                if self.verbose and progress:
+                    progress.console.print(f"[bold blue]{'Found':>22}[/] {len(faa_matching)} protein matches for {len(hit_ids)} hit_ids in [cyan]{system_id}[/]")
             
             if fna_index is not None:
-                fna_matching = [
-                    seq_id for seq_id in fna_index if any(hit_id in seq_id for hit_id in hit_ids)
-                ]
+                fna_matching = self._find_matching_sequences(fna_index, hit_ids, "nucleotide")
+                if self.verbose and progress:
+                    progress.console.print(f"[bold blue]{'Found':>22}[/] {len(fna_matching)} nucleotide matches for {len(hit_ids)} hit_ids in [cyan]{system_id}[/]")
             
-            # process protein sequences
-            faa_count = self._process_sequence_type(
-                faa_index, faa_matching, hit_ids, system_id, "protein", 
-                faa_out, result, files_dict, strain_id, progress
-            )
+            faa_count = 0
+            # process protein sequences only if faa_index exists
+            if faa_index is not None:
+                faa_buffer = io.StringIO() if not self.write_output else None
+                
+                try:
+                    out_handle = open(faa_out, "w") if faa_out else faa_buffer
+                    
+                    for seq_id in faa_matching:
+                        record = faa_index[seq_id]
+                        
+                        protein_id = self._extract_protein_id_from_record(record, seq_id, hit_ids)
+
+                        # create modified ID with system for downstream processing
+                        # retains system and protein information 
+                        modified_id = f"{system_id}@@{protein_id}"
+                        modified_desc = f"{modified_id} [system={system_id}] [protein={protein_id}]"
+                        
+                        result["proteins"][protein_id] = {
+                            "sequence": str(record.seq),
+                            "length": len(record.seq),
+                            "system_id": system_id,
+                            "protein_id": protein_id,
+                            "unique_protein_id": modified_id
+                        }
+                        
+                        self._write_fasta(out_handle, modified_id, modified_desc, str(record.seq))
+                        faa_count += 1
+                        
+                    if faa_out and out_handle:
+                        out_handle.close()
+                    elif faa_buffer:
+                        # store buffer content in result
+                        result["protein_fasta"] = faa_buffer.getvalue()
+                        faa_buffer.close()
+                        
+                except Exception as e:
+                    self._log_error(
+                        "PROTEIN_WRITE_ERROR", f"Failed to process protein sequences for system {system_id}", 
+                        strain_id=strain_id, system_id=system_id, files=files_dict, exception=e
+                    )
+                    if progress:
+                        progress.console.print(f"[bold red]Error:[/] Failed to process protein sequences for {system_id}: {str(e)}")
             
-            # process nucleotide sequences
-            fna_count = self._process_sequence_type(
-                fna_index, fna_matching, hit_ids, system_id, "nucleotide",
-                fna_out, result, files_dict, strain_id, progress
-            )
+            # process nucleotide sequences only if fna_index exists
+            fna_count = 0
+            if fna_index is not None:
+                fna_buffer = io.StringIO() if not self.write_output else None
+                
+                try:
+                    out_handle = open(fna_out, "w") if fna_out else fna_buffer
+                    
+                    for seq_id in fna_matching:
+                        record = fna_index[seq_id]
+                        nucleotide_id = self._extract_protein_id_from_record(record, seq_id, hit_ids)
+                        
+                        # create modified ID with system for downstream processing
+                        modified_id = f"{system_id}@@{nucleotide_id}" 
+                        modified_desc = f"{modified_id} [system={system_id}] [nucleotide={nucleotide_id}]"
+                        
+                        result["nucleotides"][nucleotide_id] = {
+                            "sequence": str(record.seq),
+                            "length": len(record.seq),
+                            "system_id": system_id,
+                            "nucleotide_id": nucleotide_id,
+                            "unique_nucleotide_id": modified_id
+                        }
+                        
+                        self._write_fasta(out_handle, modified_id, modified_desc, str(record.seq))
+                        fna_count += 1
+                        
+                    if fna_out and out_handle:
+                        out_handle.close()
+                    elif fna_buffer:
+                        # store buffer content in result
+                        result["nucleotide_fasta"] = fna_buffer.getvalue()
+                        fna_buffer.close()
+                        
+                except Exception as e:
+                    self._log_error(
+                        "NUCLEOTIDE_WRITE_ERROR", f"Failed to process nucleotide sequences for system {system_id}", 
+                        strain_id=strain_id, system_id=system_id, files=files_dict, exception=e
+                    )
+                    if progress:
+                        progress.console.print(f"[bold red]Error:[/] Failed to process nucleotide sequences for system {system_id}: {str(e)}")
             
             if self.write_output:
                 if faa_out and faa_index is not None:
@@ -757,19 +821,102 @@ class DefenseExtractor:
                 progress.console.print(f"[bold red]Error:[/] Failed to extract sequences for {system_id}: {str(e)}")
             return {}
     
+    def _find_matching_sequences(self, seq_index, hit_ids, seq_type="protein"):
+        """
+        Find matching sequences using multiple strategies for robust matching.
+        
+        Args:
+            seq_index: FASTA sequence index (from SeqIO)
+            hit_ids: Set of hit_ids (locus_tags) to match
+            seq_type: Type of sequences ("protein" or "nucleotide") for logging
+            
+        Returns:
+            List of matching sequence IDs from the index
+        """
+        matching_sequences = []
+        hit_ids_found = set()
+        
+        for seq_id in seq_index:
+            seq_record = seq_index[seq_id]
+            
+            # 1 - direct substring match
+            for hit_id in hit_ids:
+                if hit_id in seq_id:
+                    matching_sequences.append(seq_id)
+                    hit_ids_found.add(hit_id)
+                    break
+            else:
+                # 2 - parse locus_tag from FASTA description/header
+                # look for [locus_tag=XXXXX] pattern in sequence description
+                if hasattr(seq_record, 'description'):
+                    description = seq_record.description
+                    import re
+                    locus_tag_match = re.search(r'\[locus_tag=([^\]]+)\]', description)
+                    if locus_tag_match:
+                        locus_tag = locus_tag_match.group(1)
+                        if locus_tag in hit_ids:
+                            matching_sequences.append(seq_id)
+                            hit_ids_found.add(locus_tag)
+                            continue
+
+                # 3 - parse from complex sequence ID formats
+                # handle formats like "lcl|NC_015593.1_prot_WP_013846339.1_1"
+                # and extract potential locus_tags from embedded information
+                for hit_id in hit_ids:
+                    # check if hit_id appears anywhere in the full sequence record
+                    full_record_text = f"{seq_id} {getattr(seq_record, 'description', '')}"
+                    if hit_id in full_record_text:
+                        matching_sequences.append(seq_id)
+                        hit_ids_found.add(hit_id)
+                        break
+        
+        # log missing hit_ids 
+        missing_hit_ids = hit_ids - hit_ids_found
+        if missing_hit_ids and self.verbose:
+            missing_str = ', '.join(list(missing_hit_ids)[:3])
+            if len(missing_hit_ids) > 3:
+                missing_str += f" (and {len(missing_hit_ids) - 3} more)"
+
+            if len(hit_ids_found) / len(hit_ids) < 0.9:  # less than 90% found
+                if self.progress:
+                    self.progress.console.print(
+                        f"[bold yellow]{'Warning':>22}[/] Missing {seq_type} sequences for hit_ids: {missing_str}"
+                    )
+        
+        return matching_sequences
+    
     def _find_gene_coordinates(self, db, gene_id):
-        """Find gene coordinates in GFF database"""
-        # direct exact ID match
+        """Find gene coordinates in GFF database using multiple lookup strategies"""
+        
+        # 1 - direct exact ID match
         try:
             feature = db[gene_id]
             return (feature.start, feature.end, feature.seqid) if feature.featuretype in ['gene', 'CDS', 'mRNA'] else (None, None, None)
+        except Exception:
+            pass
+
+        # 2 - gene ID format (gene-LOCUS_TAG)
+        try:
+            gene_id_format = f"gene-{gene_id}"
+            feature = db[gene_id_format]
+            return (feature.start, feature.end, feature.seqid) if feature.featuretype in ['gene', 'CDS', 'mRNA', 'pseudogene'] else (None, None, None)
+        except Exception:
+            pass
+
+        # 3 - query by locus_tag attribute (slower but comprehensive)
+        try:
+            # check both gene and CDS features
+            for feature_type in ['gene', 'CDS']:
+                for feature in db.features_of_type(feature_type):
+                    locus_tag_attr = feature.attributes.get('locus_tag', [None])[0]
+                    if locus_tag_attr == gene_id:
+                        return (feature.start, feature.end, feature.seqid)
         except Exception as e:
             self._log_error(
                 "GENE_LOOKUP_ERROR", 
-                f"Failed to find gene {gene_id} in GFF database", 
+                f"Failed to find gene {gene_id} in GFF database using all strategies", 
                 exception=e
             )
-            pass
         
         return None, None, None
     
@@ -780,21 +927,78 @@ class DefenseExtractor:
             return SeqIO.index_db(index_file, fasta_file, "fasta")
         return SeqIO.index_db(index_file)
     
-    def _extract_protein_id(self, seq_id, hit_ids):
-        """Extract the protein ID from a sequence ID using the hit IDs for matching"""
-        # try direct match
+    def _extract_protein_id_from_record(self, record, seq_id, hit_ids):
+        """Extract protein ID from a sequence record using the record's description"""
+        # 1 - parse from FASTA description using regex
+        # look for [locus_tag=XXXXX] pattern in the record description
+        description = getattr(record, 'description', seq_id)
+        
+        import re
+        locus_tag_match = re.search(r'\[locus_tag=([^\]]+)\]', description)
+        if locus_tag_match:
+            locus_tag = locus_tag_match.group(1)
+            if locus_tag in hit_ids:
+                return locus_tag
+        
+        # 2 - direct match with sequence ID
         if seq_id in hit_ids:
             return seq_id
-            
-        # try to extract from sequence ID
+        
+        # 3 - substring match in sequence ID    
+        for hit_id in hit_ids:
+            if hit_id in seq_id:
+                return hit_id
+        
+        # 4 - substring match in full description
+        for hit_id in hit_ids:
+            if hit_id in description:
+                return hit_id
+                
+        # default: return the first hit_id as fallback (maintains functionality)
+        # but log this as it might indicate a matching problem
+        fallback_id = list(hit_ids)[0] if hit_ids else seq_id.split()[0]
+        if self.verbose and self.progress:
+            self.progress.console.print(
+                f"[bold yellow]{'Warning':>22}[/] Could not match seq_id '{seq_id[:50]}...' with hit_ids, using fallback: {fallback_id}"
+            )
+        return fallback_id
+    
+    def _extract_protein_id(self, seq_id, hit_ids):
+        """Extract the protein ID from a sequence ID using multiple matching strategies"""
+        # 1 - direct match
+        if seq_id in hit_ids:
+            return seq_id
+
+        # 2 - substring match
+        for hit_id in hit_ids:
+            if hit_id in seq_id:
+                return hit_id
+        
+        # 3 - parse from FASTA header using regex
+        # look for [locus_tag=XXXXX] pattern
+        import re
+        locus_tag_match = re.search(r'\[locus_tag=([^\]]+)\]', seq_id)
+        if locus_tag_match:
+            locus_tag = locus_tag_match.group(1)
+            if locus_tag in hit_ids:
+                return locus_tag
+        
+        # 4 - extract from complex sequence ID formats
+        # handle formats like "lcl|NC_015593.1_prot_WP_013846339.1_1" 
+        # try to find a hit_id that appears anywhere in the seq_id
         for hit_id in hit_ids:
             if hit_id in seq_id:
                 return hit_id
                 
-        # Default to sequence ID if no match
-        return seq_id
+        # default: return the first hit_id as fallback (maintains functionality)
+        # but log this as it might indicate a matching problem
+        fallback_id = list(hit_ids)[0] if hit_ids else seq_id
+        if self.verbose and self.progress:
+            self.progress.console.print(
+                f"[bold yellow]{'Warning':>22}[/] Could not match seq_id '{seq_id[:50]}...' with hit_ids, using fallback: {fallback_id}"
+            )
+        return fallback_id
     
-    # @profiler.profile_function
     def _write_fasta(self, handle, seq_id, description, sequence):
         """Write a sequence in FASTA format"""
         handle.write(f">{description}\n")
