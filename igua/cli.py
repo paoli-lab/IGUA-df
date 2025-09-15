@@ -353,7 +353,6 @@ def make_compositions(
         )
     )
 
-
 def compute_distances(
     progress: rich.progress.Progress,
     compositions: scipy.sparse.csr_matrix,
@@ -392,6 +391,7 @@ def main(argv: typing.Optional[typing.List[str]] = None) -> int:
     if not isinstance(argcomplete, ImportError):
         argcomplete.autocomplete(parser)
     args = parser.parse_args(argv)
+    
 
     if args.workdir is None:
         workdir = pathlib.Path(tempfile.mkdtemp())

@@ -7,11 +7,10 @@ import gffutils
 import io
 from Bio import SeqIO
 from typing import Dict, List, Tuple, Optional, Union, Any
+import gc
+
 import rich.progress
 from rich.console import Console
-
-# TODO: deduplicate fna/faa sequence extraction 
-# TODO: check memory usage of extractor 
 
 
 class DefenseExtractor:
@@ -49,6 +48,276 @@ class DefenseExtractor:
         unique_ref = str(uuid.uuid4())[:8]
         return unique_ref
 
+    def _load_and_filter_systems(
+        self, 
+        systems_tsv_file: pathlib.Path, 
+        genes_tsv_file: pathlib.Path,
+        activity_filter: str,
+        strain_id: Optional[str],
+        files_dict: Dict[str, Any]
+    ) -> Tuple[Optional[pd.DataFrame], Optional[pd.DataFrame]]:
+        """Load and filter TSV files"""
+        try:
+            systems_df = pd.read_csv(systems_tsv_file, sep='\t')
+            
+            # filter systems by activity if applicable
+            original_count = len(systems_df)
+            if activity_filter.lower() != "all":
+                if 'activity' in systems_df.columns:
+                    systems_df = systems_df[systems_df['activity'].str.lower() == activity_filter.lower()]
+                    
+            # check for duplicate systems after activity filtering
+            duplicate_mask = systems_df.duplicated(keep='first')
+            if duplicate_mask.any():
+                duplicate_systems = systems_df[duplicate_mask]['sys_id'].tolist()
+                n_duplicates = len(duplicate_systems)
+                
+                self.console.print(
+                    f"[bold yellow]{'Warning':>12}[/] {n_duplicates} duplicate system/s in strain [bold cyan]{strain_id}[/]: [cyan]{', '.join(duplicate_systems[:5])}{'...' if n_duplicates > 5 else ''}[/]"
+                )
+                
+                self._log_error(
+                    "DUPLICATE_SYSTEMS_WARNING", 
+                    f"Found {n_duplicates} duplicate system IDs in systems TSV", 
+                    strain_id=strain_id, 
+                    files=files_dict,
+                    exception={
+                        "duplicate_sys_ids": duplicate_systems,
+                        "systems_tsv_file": str(systems_tsv_file),
+                        "total_systems": len(systems_df),
+                        "unique_systems": len(systems_df['sys_id'].unique())
+                    }
+                )
+                
+                # keep first occurrence
+                systems_df = systems_df.drop_duplicates(keep='first')
+            
+            if activity_filter.lower() != "all":
+                if 'activity' in systems_df.columns:
+                    self.console.print(
+                        f"[bold green]{'Filtered':>12}[/] {original_count} systems to {len(systems_df)} "
+                        f"([bold cyan]{activity_filter}[/] systems only)"
+                    )
+                else:
+                    self.console.print(
+                        f"[bold yellow]{'Warning':>12}[/] No 'activity' column found, extracting all systems"
+                    )
+            else:
+                self.console.print(f"[bold blue]{'Processing':>12}[/] all {original_count} systems (no activity filter)")
+
+            genes_df = pd.read_csv(genes_tsv_file, sep='\t')
+            return systems_df, genes_df
+            
+        except Exception as e:
+            self._log_error(
+                "TSV_ERROR", "Failed to read TSV files", 
+                strain_id=strain_id, files=files_dict, exception=e
+            )
+            self.console.print(f"[bold red]Error:[/] Failed to read TSV files: {str(e)}")
+            return None, None
+
+    def _setup_gff_database(
+        self, 
+        gff_file: pathlib.Path, 
+        gff_cache_dir: Optional[pathlib.Path],
+        unique_id: str,
+        strain_id: Optional[str],
+        files_dict: Dict[str, Any]
+    ) -> Tuple[Any, str]:
+        """Set up GFF database with in-memory fallback"""
+        db_path = ":memory:"
+        
+        try:
+            if gff_cache_dir:
+                os.makedirs(gff_cache_dir, exist_ok=True)
+                db_path = os.path.join(str(gff_cache_dir), f"{os.path.basename(str(gff_file))}_{unique_id}.db")
+            else:
+                db_path = os.path.join(tempfile.gettempdir(), f"gff_temp_{unique_id}.db")
+                
+            db = gffutils.create_db(
+                str(gff_file),  
+                dbfn=db_path, 
+                force=True, 
+                merge_strategy='create_unique',
+                    # widen id_spec to include more attributes for robust matching
+                id_spec=['ID', 'Name', 'gbkey', 'gene', 'gene_biotype', 'locus_tag', 'old_locus_tag']
+            )
+            return db, db_path
+            
+        except Exception as e:
+            self._log_error(
+                "GFF_ERROR", "Failed to create GFF database, falling back to in-memory", 
+                strain_id=strain_id, files=files_dict, exception=e
+            )
+            self.console.print(f"[bold blue]{'Using':>12}[/] in-memory database")
+            db_path = ":memory:"
+            
+            try:
+                db = gffutils.create_db(
+                    str(gff_file),
+                    dbfn=":memory:", 
+                    merge_strategy='create_unique',
+                        # widen id_spec to include more attributes for robust matching
+                    id_spec=['ID', 'Name', 'gbkey', 'gene', 'gene_biotype', 'locus_tag', 'old_locus_tag']
+                )
+                return db, db_path
+                
+            except Exception as e2:
+                self._log_error(
+                    "GFF_FATAL_ERROR", "Failed to create in-memory GFF database", 
+                    strain_id=strain_id, files=files_dict, exception=e2
+                )
+                self.console.print(f"[bold red]Error:[/] Failed to create GFF database: {str(e2)}")
+                return None, db_path
+
+    def _extract_single_system(
+        self,
+        system: pd.Series,
+        genes_df: pd.DataFrame,
+        genome_dict: Dict[str, Any],
+        db: Any,
+        output_dir: Optional[pathlib.Path],
+        strain_id: Optional[str],
+        files_dict: Dict[str, Any]
+    ) -> Optional[Dict[str, Any]]:
+        """Extract a single defense system"""
+        sys_id = system['sys_id']
+        clean_strain = self._get_unique_strain_id(strain_id)
+        unique_sys_id = f"{clean_strain}@{sys_id}"
+        system_files = {**files_dict, "system_id": sys_id}
+        
+        system_genes = genes_df[genes_df['sys_id'] == sys_id].sort_values('hit_pos') 
+        if system_genes.empty:
+            self._log_error(
+                "NO_GENES_ERROR", "No genes found for system", 
+                strain_id=strain_id, system_id=sys_id, files=system_files
+            )
+            self.console.print(f"[bold yellow]{'Warning':>12}[/] No genes found for system {sys_id}")
+            return None
+        
+        # beginning and ending gene
+        try:
+            beg_gene_mask = system_genes['hit_id'] == system['sys_beg']
+            end_gene_mask = system_genes['hit_id'] == system['sys_end']
+            
+            if not beg_gene_mask.any() or not end_gene_mask.any():
+                self._log_error(
+                    "GENE_NOT_FOUND", f"Beginning or ending gene not found in system genes", 
+                    strain_id=strain_id, system_id=sys_id, files=system_files,
+                    exception={
+                        "sys_beg": system['sys_beg'], 
+                        "sys_end": system['sys_end'],
+                        "available_hit_ids": list(system_genes['hit_id'])
+                    }
+                )
+                self.console.print(f"[bold red]Error:[/] Could not find beginning or ending gene for system {sys_id}")
+                return None
+            
+            beg_hit_id = system['sys_beg']
+            end_hit_id = system['sys_end']
+            
+            # get genomic coordinates from GFF database
+            start_coord, start_end, start_seq_id = self._find_gene_coordinates(db, beg_hit_id)
+            end_coord, end_end, end_seq_id = self._find_gene_coordinates(db, end_hit_id)
+
+            system_start = start_coord
+            system_end = end_end
+            
+        except Exception as e:
+            self._log_error(
+                "GENE_DATA_ERROR", "Failed to extract gene information", 
+                strain_id=strain_id, system_id=sys_id, files=system_files, exception=e
+            )
+            self.console.print(f"[bold red]Error:[/] Failed to get gene data for system {sys_id}: {str(e)}")
+            return None
+        
+        # validate coordinates
+        if system_start is None or system_end is None or start_seq_id is None or end_seq_id is None:
+            self._log_error(
+                "COORD_ERROR", "Missing coordinates for system", 
+                strain_id=strain_id, system_id=sys_id, files=system_files,
+                exception={
+                    "system_start": system_start, "system_end": system_end, 
+                    "start_seq_id": start_seq_id, "end_seq_id": end_seq_id,
+                    "beg_hit_id": beg_hit_id, "end_hit_id": end_hit_id
+                }
+            )
+            self.console.print(f"[bold yellow]{'Warning':>12}[/] Missing coordinates for system {sys_id}")
+            return None
+            
+        if start_seq_id != end_seq_id:
+            self._log_error(
+                "SEQUENCE_SPAN_ERROR", "System spans multiple sequences", 
+                strain_id=strain_id, system_id=sys_id, files=system_files,
+                exception={"start_seq_id": start_seq_id, "end_seq_id": end_seq_id}
+            )
+            self.console.print(f"[bold yellow]{'Warning':>12}[/] System {sys_id} spans multiple sequences")
+            return None
+            
+        seq_id = start_seq_id
+        
+        # swap coordinate order if needed
+        if system_start > system_end:
+            system_start, system_end = system_end, system_start
+            self.console.print(f"[bold yellow]{'Warning':>12}[/] System {sys_id} coordinates swapped: start > end.")
+
+        # raise warning for suspiciously large regions >1e4 
+        region_size = system_end - system_start + 1
+        if region_size > 1e4:
+            self._log_error(
+                "LARGE_REGION_WARNING", f"System region too large: {region_size} bp", 
+                strain_id=strain_id, system_id=sys_id, files=system_files
+            )
+            self.console.print(f"[bold yellow]{'Warning':>12}[/] System [cyan]{sys_id}[/] region too large: {region_size} bp.")
+        
+        # extract genomic sequence, store and write if needed
+        if seq_id not in genome_dict:
+            self._log_error(
+                "SEQUENCE_ID_ERROR", f"Sequence ID {seq_id} not found in genome", 
+                strain_id=strain_id, system_id=sys_id, files=system_files
+            )
+            self.console.print(f"[bold red]{'Error':>12}[/] Sequence {seq_id} not found in genome")
+            return None
+
+        try:
+            genome_seq = genome_dict[seq_id].seq
+            sequence = genome_seq[max(0, system_start-1):min(len(genome_seq), system_end)]
+            sequence_length = len(sequence)
+            
+            result = {
+                "sequence": str(sequence),
+                "length": sequence_length,
+                "seq_id": seq_id,
+                "start": system_start,
+                "end": system_end,
+                "type": system['type'],
+                "subtype": system['subtype'] if 'subtype' in system and pd.notna(system['subtype']) else None,
+                "strain_id": strain_id,
+                "sys_id": sys_id,
+                "unique_sys_id": unique_sys_id
+            }
+            
+            if self.write_output and output_dir:
+                output_file = os.path.join(str(output_dir), f"{unique_sys_id}.fasta")
+                with open(output_file, "w") as out:
+                    out.write(f">{unique_sys_id} OriginalID:{sys_id} Strain:{strain_id} Type:{system['type']} Subtype:{system['subtype'] if 'subtype' in system and pd.notna(system['subtype']) else 'NA'} Length:{sequence_length}bp\n")
+                    out.write(str(sequence) + "\n")
+                result["file_path"] = output_file
+                
+            if self.verbose: 
+                self.console.print(f"[bold blue]{'Extracted':>22}[/] genomic sequence for [cyan]{sys_id}[/] system ({sequence_length} bp)")
+            
+
+            del sequence, genome_seq
+            return result
+            
+        except Exception as e:
+            self._log_error(
+                "SEQUENCE_EXTRACTION_ERROR", "Failed to extract or write sequence", 
+                strain_id=strain_id, system_id=sys_id, files=system_files, exception=e
+            )
+            self.console.print(f"[bold red]Error:[/] Failed to extract sequence for {sys_id}: {str(e)}")
+            return None
 
     def extract_systems(
         self,
@@ -79,11 +348,9 @@ class DefenseExtractor:
         if self.write_output and output_dir:
             os.makedirs(output_dir, exist_ok=True)
         
-        # set up database path
-        db_path = ":memory:"
         unique_id = str(uuid.uuid4())
         
-        # for error logging
+        # Setup file dictionary for error logging
         files_dict = {
             "systems_tsv": systems_tsv_file,
             "genes_tsv": genes_tsv_file,
@@ -103,71 +370,22 @@ class DefenseExtractor:
         )
         
         results = {}
+        systems_df = None
+        genes_df = None
+        genome_dict = None
+        db = None
+        db_path = ":memory:"
         
         try:
             if not using_external_progress:
                 progress.start()
             
-            # load TSV files
-            try:
-                systems_df = pd.read_csv(systems_tsv_file, sep='\t')
-                
-                # filter systems by activity if applicable
-                original_count = len(systems_df)
-                if activity_filter.lower() != "all":
-                    if 'activity' in systems_df.columns:
-                        systems_df = systems_df[systems_df['activity'].str.lower() == activity_filter.lower()]
-                        filtered_count = len(systems_df)
-                        
-                # check for duplicate systems after activity filtering
-                # note: only complete duplicates are omitted
-                duplicate_mask = systems_df.duplicated(keep='first')
-                if duplicate_mask.any():
-                    duplicate_systems = systems_df[duplicate_mask]['sys_id'].tolist()
-                    n_duplicates = len(duplicate_systems)
-                    
-                    self.console.print(
-                        f"[bold yellow]{'Warning':>12}[/] {n_duplicates} duplicate system/s in strain [bold cyan]{strain_id}[/]: [cyan]{', '.join(duplicate_systems[:5])}{'...' if n_duplicates > 5 else ''}[/]"
-                    )
-                    
-                    self._log_error(
-                        "DUPLICATE_SYSTEMS_WARNING", 
-                        f"Found {n_duplicates} duplicate system IDs in systems TSV", 
-                        strain_id=strain_id, 
-                        files=files_dict,
-                        exception={
-                            "duplicate_sys_ids": duplicate_systems,
-                            "systems_tsv_file": str(systems_tsv_file),
-                            "total_systems": len(systems_df),
-                            "unique_systems": len(systems_df['sys_id'].unique())
-                        }
-                    )
-                    
-                    # duplicates: keep first occurrence
-                    systems_df = systems_df.drop_duplicates(keep='first')
-                
-                if activity_filter.lower() != "all":
-                    if 'activity' in systems_df.columns:
-                        self.console.print(
-                            f"[bold green]{'Filtered':>12}[/] {original_count} systems to {len(systems_df)} "
-                            f"([bold cyan]{activity_filter}[/] systems only)"
-                        )
-                    else:
-                        self.console.print(
-                            f"[bold yellow]{'Warning':>12}[/] No 'activity' column found, extracting all systems"
-                        )
-                else:
-                    self.console.print(f"[bold blue]{'Processing':>12}[/] all {original_count} systems (no activity filter)")
-
-
-                genes_df = pd.read_csv(genes_tsv_file, sep='\t')
-
-            except Exception as e:
-                self._log_error(
-                    "TSV_ERROR", "Failed to read TSV files", 
-                    strain_id=strain_id, files=files_dict, exception=e
-                )
-                self.console.print(f"[bold red]Error:[/] Failed to read TSV files: {str(e)}")
+            # load and filter TSV files
+            systems_df, genes_df = self._load_and_filter_systems(
+                systems_tsv_file, genes_tsv_file, activity_filter, strain_id, files_dict
+            )
+            
+            if systems_df is None or genes_df is None:
                 return {}
             
             # load genome
@@ -181,183 +399,29 @@ class DefenseExtractor:
                 self.console.print(f"[bold red]Error:[/] Failed to load genome: {str(e)}")
                 return {}
             
-            # set up GFF database with in-memory fallback
-            try:
-                if gff_cache_dir:
-                    os.makedirs(gff_cache_dir, exist_ok=True)
-                    db_path = os.path.join(str(gff_cache_dir), f"{os.path.basename(str(gff_file))}_{unique_id}.db")
-                else:
-                    db_path = os.path.join(tempfile.gettempdir(), f"gff_temp_{unique_id}.db")
-                    
-                db = gffutils.create_db(
-                    str(gff_file),  
-                    dbfn=db_path, 
-                    force=True, 
-                    merge_strategy='create_unique',
-                    # widen id_spec to include more attributes for robust matching
-                    id_spec=['ID', 'Name', 'gbkey', 'gene', 'gene_biotype', 'locus_tag', 'old_locus_tag']
-                )
-            except Exception as e:
-                self._log_error(
-                    "GFF_ERROR", "Failed to create GFF database, falling back to in-memory", 
-                    strain_id=strain_id, files=files_dict, exception=e
-                )
-                self.console.print(f"[bold blue]{'Using':>12}[/] in-memory database")
-                db_path = ":memory:"  # reset to in-memory in case of exception
-                try:
-                    db = gffutils.create_db(
-                        str(gff_file),  # convert Path to string here
-                        dbfn=":memory:", 
-                        merge_strategy='create_unique',
-                        # widen id_spec to include more attributes for robust matching
-                        id_spec=['ID', 'Name', 'gbkey', 'gene', 'gene_biotype', 'locus_tag', 'old_locus_tag']
-                    )
-                except Exception as e2:
-                    self._log_error(
-                        "GFF_FATAL_ERROR", "Failed to create in-memory GFF database", 
-                        strain_id=strain_id, files=files_dict, exception=e2
-                    )
-                    self.console.print(f"[bold red]Error:[/] Failed to create GFF database: {str(e2)}")
-                    return {}
+            # setup GFF database
+            db, db_path = self._setup_gff_database(
+                gff_file, gff_cache_dir, unique_id, strain_id, files_dict
+            )
             
+            if db is None:
+                return {}
+            
+            # process each system
+            systems_processed = 0
             for _, system in systems_df.iterrows():
-                sys_id = system['sys_id']
-                clean_strain = self._get_unique_strain_id(strain_id)
-                unique_sys_id = f"{clean_strain}@{sys_id}"
-
-                system_files = {**files_dict, "system_id": sys_id}
-                    
-                system_genes = genes_df[genes_df['sys_id'] == sys_id].sort_values('hit_pos') 
-                if system_genes.empty:
-                    self._log_error(
-                        "NO_GENES_ERROR", "No genes found for system", 
-                        strain_id=strain_id, system_id=sys_id, files=system_files
-                    )
-                    self.console.print(f"[bold yellow]{'Warning':>12}[/] No genes found for system {sys_id}")
-                    continue
+                result = self._extract_single_system(
+                    system, genes_df, genome_dict, db, output_dir, strain_id, files_dict
+                )
                 
-                # beginning and ending genes
-                try:
-                    # directly access the start and end genes using 'sys_beg' and 'sys_end' from the systems tsv DefenseFinder output 
-                    beg_gene_mask = system_genes['hit_id'] == system['sys_beg']
-                    end_gene_mask = system_genes['hit_id'] == system['sys_end']
-                    
-                    if not beg_gene_mask.any() or not end_gene_mask.any():
-                        self._log_error(
-                            "GENE_NOT_FOUND", f"Beginning or ending gene not found in system genes", 
-                            strain_id=strain_id, system_id=sys_id, files=system_files,
-                            exception={
-                                "sys_beg": system['sys_beg'], 
-                                "sys_end": system['sys_end'],
-                                "available_hit_ids": list(system_genes['hit_id'])
-                            }
-                        )
-                        self.console.print(f"[bold red]Error:[/] Could not find beginning or ending gene for system {sys_id}")
-                        continue
-                    
-                    beg_hit_id = system['sys_beg']
-                    end_hit_id = system['sys_end']
-                    
-                    # get genomic coordinates from the GFF database
-                    start_coord, start_end, start_seq_id = self._find_gene_coordinates(db, beg_hit_id)
-                    end_coord, end_end, end_seq_id = self._find_gene_coordinates(db, end_hit_id)
-
-                    # for complete system genomic sequence, use start of first gene and end of last gene
-                    system_start = start_coord
-                    system_end = end_end
-                    
-                except Exception as e:
-                    self._log_error(
-                        "GENE_DATA_ERROR", "Failed to extract gene information", 
-                        strain_id=strain_id, system_id=sys_id, files=system_files, exception=e
-                    )
-                    self.console.print(f"[bold red]Error:[/] Failed to get gene data for system {sys_id}: {str(e)}")
-                    continue
+                if result:
+                    results[result["unique_sys_id"]] = result
                 
-                # skip if coordinates invalid
-                if system_start is None or system_end is None or start_seq_id is None or end_seq_id is None:
-                    self._log_error(
-                        "COORD_ERROR", "Missing coordinates for system", 
-                        strain_id=strain_id, system_id=sys_id, files=system_files,
-                        exception={
-                            "system_start": system_start, "system_end": system_end, 
-                            "start_seq_id": start_seq_id, "end_seq_id": end_seq_id,
-                            "beg_hit_id": beg_hit_id, "end_hit_id": end_hit_id
-                        }
-                    )
-                    self.console.print(f"[bold yellow]{'Warning':>12}[/] Missing coordinates for system {sys_id}")
-                    continue
-                    
-                if start_seq_id != end_seq_id:
-                    self._log_error(
-                        "SEQUENCE_SPAN_ERROR", "System spans multiple sequences", 
-                        strain_id=strain_id, system_id=sys_id, files=system_files,
-                        exception={"start_seq_id": start_seq_id, "end_seq_id": end_seq_id}
-                    )
-                    self.console.print(f"[bold yellow]{'Warning':>12}[/] System {sys_id} spans multiple sequences")
-                    continue
-                    
-                seq_id = start_seq_id
+                systems_processed += 1
                 
-                # valid coordinates - swap if needed
-                if system_start > system_end:
-                    system_start, system_end = system_end, system_start
-                    self.console.print(f"[bold yellow]{'Warning':>12}[/] System {sys_id} coordinates swapped: start > end.")
-
-                    
-                # raise warning for suspiciously large regions >1e4 
-                region_size = system_end - system_start + 1
-                if region_size > 1e4:
-                    self._log_error(
-                        "LARGE_REGION_WARNING", f"System region too large: {region_size} bp", 
-                        strain_id=strain_id, system_id=sys_id, files=system_files
-                    )
-                    self.console.print(f"[bold yellow]{'Warning':>12}[/] System [cyan]{sys_id}[/] region too large: {region_size} bp.")
-                
-                # extract genomic sequence, store and write if needed
-                if seq_id in genome_dict:
-                    try:
-                        genome_seq = genome_dict[seq_id].seq
-                        sequence = genome_seq[max(0, system_start-1):min(len(genome_seq), system_end)]
-                        sequence_length = len(sequence)
-                        
-                        results[unique_sys_id] = {
-                            "sequence": str(sequence),
-                            "length": sequence_length,
-                            "seq_id": seq_id,
-                            "start": system_start,
-                            "end": system_end,
-                            "type": system['type'],
-                            "subtype": system['subtype'] if 'subtype' in system and pd.notna(system['subtype']) else None,
-                            "strain_id": strain_id,
-                            "sys_id": sys_id,
-                            "unique_sys_id": unique_sys_id
-                        }
-                        
-                        if self.write_output and output_dir:
-                            output_file = os.path.join(str(output_dir), f"{unique_sys_id}.fasta")
-                            with open(output_file, "w") as out:
-                                out.write(f">{unique_sys_id} OriginalID:{sys_id} Strain:{strain_id} Type:{system['type']} Subtype:{system['subtype'] if 'subtype' in system and pd.notna(system['subtype']) else 'NA'} Length:{sequence_length}bp\n")
-                                out.write(str(sequence) + "\n")
-                            results[unique_sys_id]["file_path"] = output_file
-                            
-                        if self.verbose: 
-                            self.console.print(f"[bold blue]{'Extracted':>22}[/] genomic sequence for [cyan]{sys_id}[/] system ({sequence_length} bp)")
-                        
-                    except Exception as e:
-                        self._log_error(
-                            "SEQUENCE_EXTRACTION_ERROR", "Failed to extract or write sequence", 
-                            strain_id=strain_id, system_id=sys_id, files=system_files, exception=e
-                        )
-                        self.console.print(f"[bold red]Error:[/] Failed to extract sequence for {sys_id}: {str(e)}")
-                else:
-                    self._log_error(
-                        "SEQUENCE_ID_ERROR", f"Sequence ID {seq_id} not found in genome", 
-                        strain_id=strain_id, system_id=sys_id, files=system_files
-                    )
-                    self.console.print(f"[bold red]{'Error':>12}[/] Sequence {seq_id} not found in genome")
-                    
-                # progress.advance(task_systems)
+                # Periodic garbage collection
+                if systems_processed % 10 == 0:
+                    gc.collect()
 
             self.console.print(f"[bold green]{'Extracted':>12}[/] {len(results)} defense systems for [bold cyan]{strain_id}[/]")
             
@@ -369,8 +433,18 @@ class DefenseExtractor:
             self.console.print(f"[bold red]Fatal Error:[/] {str(e)}")
             
         finally:
+            # cleanup
+            if systems_df is not None:
+                del systems_df
+            if genes_df is not None:
+                del genes_df  
+            if genome_dict is not None:
+                del genome_dict
+            if db is not None:
+                del db
+            
             # clean up temp database
-            if db_path != ":memory:" and os.path.exists(db_path) and (not gff_cache_dir or unique_id in db_path):
+            if db_path != ":memory:" and os.path.exists(db_path) and unique_id in str(db_path):
                 try:
                     os.unlink(db_path)
                 except Exception as e:
@@ -381,6 +455,8 @@ class DefenseExtractor:
                 
             if not using_external_progress:
                 progress.stop()
+                
+            gc.collect()
                 
         return results
         
@@ -516,6 +592,72 @@ class DefenseExtractor:
 
         return results
     
+    def _process_sequence_type(
+        self, 
+        index: Any, 
+        matching_seq_ids: List[str], 
+        hit_ids: set, 
+        system_id: str, 
+        sequence_type: str,
+        output_file: Optional[str],
+        result: Dict[str, Any],
+        files_dict: Dict[str, Any],
+        strain_id: Optional[str],
+        progress: Optional[rich.progress.Progress]
+    ) -> int:
+        """Helper function to process protein or nucleotide sequences"""
+        if index is None:
+            return 0
+            
+        buffer = io.StringIO() if not self.write_output else None
+        count = 0
+        
+        try:
+            out_handle = open(output_file, "w") if output_file else buffer
+            
+            for seq_id in matching_seq_ids:
+                record = index[seq_id]
+                gene_id = self._extract_protein_id(seq_id, hit_ids)
+                
+                # ID with system for downstream processing
+                modified_id = f"{system_id}@@{gene_id}"
+                modified_desc = f"{modified_id} [system={system_id}] [{sequence_type}={gene_id}]"
+                
+                # store in result section
+                result_key = "proteins" if sequence_type == "protein" else "nucleotides"
+                id_key = "protein_id" if sequence_type == "protein" else "nucleotide_id"
+                unique_key = "unique_protein_id" if sequence_type == "protein" else "unique_nucleotide_id"
+                
+                result[result_key][gene_id] = {
+                    "sequence": str(record.seq),
+                    "length": len(record.seq),
+                    "system_id": system_id,
+                    id_key: gene_id,
+                    unique_key: modified_id
+                }
+                
+                self._write_fasta(out_handle, modified_id, modified_desc, str(record.seq))
+                count += 1
+                
+            if output_file and out_handle:
+                out_handle.close()
+            elif buffer:
+                # store buffer content in result
+                fasta_key = "protein_fasta" if sequence_type == "protein" else "nucleotide_fasta"
+                result[fasta_key] = buffer.getvalue()
+                buffer.close()
+                
+        except Exception as e:
+            error_type = f"{sequence_type.upper()}_WRITE_ERROR"
+            self._log_error(
+                error_type, f"Failed to process {sequence_type} sequences for system {system_id}", 
+                strain_id=strain_id, system_id=system_id, files=files_dict, exception=e
+            )
+            if progress:
+                progress.console.print(f"[bold red]Error:[/] Failed to process {sequence_type} sequences for {system_id}: {str(e)}")
+        
+        return count
+
     def _extract_sequences_for_system(
         self,
         system_id: str, 
@@ -529,17 +671,17 @@ class DefenseExtractor:
         verbose: bool = False, 
     ) -> Dict[str, Any]:
         """Extract gene sequences for a single defense system"""
-        # file paths for error logging
-        files_dict = {"system_id": system_id}
+        # for error logging
+        files_dict: Dict[str, Any] = {"system_id": system_id}
         if output_dir:
             files_dict.update({
                 "output_dir": output_dir,
-                "faa_output": os.path.join(output_dir, f"{system_id}.faa") if self.write_output else None,
-                "fna_output": os.path.join(output_dir, f"{system_id}.fna") if self.write_output else None
-            }) # type: ignore
+                "faa_output": os.path.join(str(output_dir), f"{system_id}.faa") if self.write_output else None,
+                "fna_output": os.path.join(str(output_dir), f"{system_id}.fna") if self.write_output else None
+            })
         
         # filter only genes for this system
-        lookup_sys_id = original_sys_id or system_id.split('@')[-1] # original sys_id
+        lookup_sys_id = original_sys_id or system_id.split('@')[-1]
         system_genes = genes_df[genes_df['sys_id'] == lookup_sys_id] 
         
         if system_genes.empty:
@@ -563,7 +705,6 @@ class DefenseExtractor:
         }
         
         try:
-            # find matching sequences
             faa_matching = []
             fna_matching = []
             
@@ -662,6 +803,11 @@ class DefenseExtractor:
                     )
                     if progress:
                         progress.console.print(f"[bold red]Error:[/] Failed to process nucleotide sequences for system {system_id}: {str(e)}")
+            # process nucleotide sequences
+            fna_count = self._process_sequence_type(
+                fna_index, fna_matching, hit_ids, system_id, "nucleotide",
+                fna_out, result, files_dict, strain_id, progress
+            )
             
             if self.write_output:
                 if faa_out and faa_index is not None:
@@ -796,6 +942,7 @@ class DefenseExtractor:
             return SeqIO.index_db(index_file, fasta_file, "fasta")
         return SeqIO.index_db(index_file)
     
+
     def _extract_protein_id_from_record(self, record, seq_id, hit_ids):
         """Extract protein ID from a sequence record using the record's description"""
         # 1 - parse from FASTA description using regex
@@ -831,7 +978,7 @@ class DefenseExtractor:
                 f"[bold yellow]{'Warning':>22}[/] Could not match seq_id '{seq_id[:50]}...' with hit_ids, using fallback: {fallback_id}"
             )
         return fallback_id
-    
+
     def _extract_protein_id(self, seq_id, hit_ids):
         """Extract the protein ID from a sequence ID using multiple matching strategies"""
         # 1 - direct match
@@ -867,7 +1014,8 @@ class DefenseExtractor:
                 f"[bold yellow]{'Warning':>22}[/] Could not match seq_id '{seq_id[:50]}...' with hit_ids, using fallback: {fallback_id}"
             )
         return fallback_id
-    
+
+
     def _write_fasta(self, handle, seq_id, description, sequence):
         """Write a sequence in FASTA format"""
         handle.write(f">{description}\n")
