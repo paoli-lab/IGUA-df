@@ -139,7 +139,8 @@ class DefenseExtractor:
                 dbfn=db_path, 
                 force=True, 
                 merge_strategy='create_unique',
-                id_spec=['ID', 'Name', 'locus_tag', 'gene']
+                    # widen id_spec to include more attributes for robust matching
+                id_spec=['ID', 'Name', 'gbkey', 'gene', 'gene_biotype', 'locus_tag', 'old_locus_tag']
             )
             return db, db_path
             
@@ -156,7 +157,8 @@ class DefenseExtractor:
                     str(gff_file),
                     dbfn=":memory:", 
                     merge_strategy='create_unique',
-                    id_spec=['ID', 'Name', 'locus_tag', 'gene']
+                        # widen id_spec to include more attributes for robust matching
+                    id_spec=['ID', 'Name', 'gbkey', 'gene', 'gene_biotype', 'locus_tag', 'old_locus_tag']
                 )
                 return db, db_path
                 
@@ -709,21 +711,100 @@ class DefenseExtractor:
             fna_matching = []
             
             if faa_index is not None:
-                faa_matching = [
-                    seq_id for seq_id in faa_index if any(hit_id in seq_id for hit_id in hit_ids)
-                ]
+                faa_matching = self._find_matching_sequences(faa_index, hit_ids, "protein")
+                if self.verbose and progress:
+                    progress.console.print(f"[bold blue]{'Found':>22}[/] {len(faa_matching)} protein matches for {len(hit_ids)} hit_ids in [cyan]{system_id}[/]")
             
             if fna_index is not None:
-                fna_matching = [
-                    seq_id for seq_id in fna_index if any(hit_id in seq_id for hit_id in hit_ids)
-                ]
+                fna_matching = self._find_matching_sequences(fna_index, hit_ids, "nucleotide")
+                if self.verbose and progress:
+                    progress.console.print(f"[bold blue]{'Found':>22}[/] {len(fna_matching)} nucleotide matches for {len(hit_ids)} hit_ids in [cyan]{system_id}[/]")
             
-            # process protein sequences
-            faa_count = self._process_sequence_type(
-                faa_index, faa_matching, hit_ids, system_id, "protein", 
-                faa_out, result, files_dict, strain_id, progress
-            )
+            faa_count = 0
+            # process protein sequences only if faa_index exists
+            if faa_index is not None:
+                faa_buffer = io.StringIO() if not self.write_output else None
+                
+                try:
+                    out_handle = open(faa_out, "w") if faa_out else faa_buffer
+                    
+                    for seq_id in faa_matching:
+                        record = faa_index[seq_id]
+                        
+                        protein_id = self._extract_protein_id_from_record(record, seq_id, hit_ids)
+
+                        # create modified ID with system for downstream processing
+                        # retains system and protein information 
+                        modified_id = f"{system_id}@@{protein_id}"
+                        modified_desc = f"{modified_id} [system={system_id}] [protein={protein_id}]"
+                        
+                        result["proteins"][protein_id] = {
+                            "sequence": str(record.seq),
+                            "length": len(record.seq),
+                            "system_id": system_id,
+                            "protein_id": protein_id,
+                            "unique_protein_id": modified_id
+                        }
+                        
+                        self._write_fasta(out_handle, modified_id, modified_desc, str(record.seq))
+                        faa_count += 1
+                        
+                    if faa_out and out_handle:
+                        out_handle.close()
+                    elif faa_buffer:
+                        # store buffer content in result
+                        result["protein_fasta"] = faa_buffer.getvalue()
+                        faa_buffer.close()
+                        
+                except Exception as e:
+                    self._log_error(
+                        "PROTEIN_WRITE_ERROR", f"Failed to process protein sequences for system {system_id}", 
+                        strain_id=strain_id, system_id=system_id, files=files_dict, exception=e
+                    )
+                    if progress:
+                        progress.console.print(f"[bold red]Error:[/] Failed to process protein sequences for {system_id}: {str(e)}")
             
+            # process nucleotide sequences only if fna_index exists
+            fna_count = 0
+            if fna_index is not None:
+                fna_buffer = io.StringIO() if not self.write_output else None
+                
+                try:
+                    out_handle = open(fna_out, "w") if fna_out else fna_buffer
+                    
+                    for seq_id in fna_matching:
+                        record = fna_index[seq_id]
+                        nucleotide_id = self._extract_protein_id_from_record(record, seq_id, hit_ids)
+                        
+                        # create modified ID with system for downstream processing
+                        modified_id = f"{system_id}@@{nucleotide_id}" 
+                        modified_desc = f"{modified_id} [system={system_id}] [nucleotide={nucleotide_id}]"
+                        
+                        result["nucleotides"][nucleotide_id] = {
+                            "sequence": str(record.seq),
+                            "length": len(record.seq),
+                            "system_id": system_id,
+                            "nucleotide_id": nucleotide_id,
+                            "unique_nucleotide_id": modified_id
+                        }
+                        
+                        self._write_fasta(out_handle, modified_id, modified_desc, str(record.seq))
+                        fna_count += 1
+                        
+                    if fna_out and out_handle:
+                        out_handle.close()
+                    elif fna_buffer:
+                        # store buffer content in result
+                        result["nucleotide_fasta"] = fna_buffer.getvalue()
+                        fna_buffer.close()
+                        
+                except Exception as e:
+                    self._log_error(
+                        "NUCLEOTIDE_WRITE_ERROR", f"Failed to process nucleotide sequences for system {system_id}", 
+                        strain_id=strain_id, system_id=system_id, files=files_dict, exception=e
+                    )
+                    if progress:
+                        progress.console.print(f"[bold red]Error:[/] Failed to process nucleotide sequences for system {system_id}: {str(e)}")
             # process nucleotide sequences
             fna_count = self._process_sequence_type(
                 fna_index, fna_matching, hit_ids, system_id, "nucleotide",
@@ -757,19 +838,102 @@ class DefenseExtractor:
                 progress.console.print(f"[bold red]Error:[/] Failed to extract sequences for {system_id}: {str(e)}")
             return {}
     
+    def _find_matching_sequences(self, seq_index, hit_ids, seq_type="protein"):
+        """
+        Find matching sequences using multiple strategies for robust matching.
+        
+        Args:
+            seq_index: FASTA sequence index (from SeqIO)
+            hit_ids: Set of hit_ids (locus_tags) to match
+            seq_type: Type of sequences ("protein" or "nucleotide") for logging
+            
+        Returns:
+            List of matching sequence IDs from the index
+        """
+        matching_sequences = []
+        hit_ids_found = set()
+        
+        for seq_id in seq_index:
+            seq_record = seq_index[seq_id]
+            
+            # 1 - direct substring match
+            for hit_id in hit_ids:
+                if hit_id in seq_id:
+                    matching_sequences.append(seq_id)
+                    hit_ids_found.add(hit_id)
+                    break
+            else:
+                # 2 - parse locus_tag from FASTA description/header
+                # look for [locus_tag=XXXXX] pattern in sequence description
+                if hasattr(seq_record, 'description'):
+                    description = seq_record.description
+                    import re
+                    locus_tag_match = re.search(r'\[locus_tag=([^\]]+)\]', description)
+                    if locus_tag_match:
+                        locus_tag = locus_tag_match.group(1)
+                        if locus_tag in hit_ids:
+                            matching_sequences.append(seq_id)
+                            hit_ids_found.add(locus_tag)
+                            continue
+
+                # 3 - parse from complex sequence ID formats
+                # handle formats like "lcl|NC_015593.1_prot_WP_013846339.1_1"
+                # and extract potential locus_tags from embedded information
+                for hit_id in hit_ids:
+                    # check if hit_id appears anywhere in the full sequence record
+                    full_record_text = f"{seq_id} {getattr(seq_record, 'description', '')}"
+                    if hit_id in full_record_text:
+                        matching_sequences.append(seq_id)
+                        hit_ids_found.add(hit_id)
+                        break
+        
+        # log missing hit_ids 
+        missing_hit_ids = hit_ids - hit_ids_found
+        if missing_hit_ids and self.verbose:
+            missing_str = ', '.join(list(missing_hit_ids)[:3])
+            if len(missing_hit_ids) > 3:
+                missing_str += f" (and {len(missing_hit_ids) - 3} more)"
+
+            if len(hit_ids_found) / len(hit_ids) < 0.9:  # less than 90% found
+                if self.progress:
+                    self.progress.console.print(
+                        f"[bold yellow]{'Warning':>22}[/] Missing {seq_type} sequences for hit_ids: {missing_str}"
+                    )
+        
+        return matching_sequences
+    
     def _find_gene_coordinates(self, db, gene_id):
-        """Find gene coordinates in GFF database"""
-        # direct exact ID match
+        """Find gene coordinates in GFF database using multiple lookup strategies"""
+        
+        # 1 - direct exact ID match
         try:
             feature = db[gene_id]
             return (feature.start, feature.end, feature.seqid) if feature.featuretype in ['gene', 'CDS', 'mRNA'] else (None, None, None)
+        except Exception:
+            pass
+
+        # 2 - gene ID format (gene-LOCUS_TAG)
+        try:
+            gene_id_format = f"gene-{gene_id}"
+            feature = db[gene_id_format]
+            return (feature.start, feature.end, feature.seqid) if feature.featuretype in ['gene', 'CDS', 'mRNA', 'pseudogene'] else (None, None, None)
+        except Exception:
+            pass
+
+        # 3 - query by locus_tag attribute (slower but comprehensive)
+        try:
+            # check both gene and CDS features
+            for feature_type in ['gene', 'CDS']:
+                for feature in db.features_of_type(feature_type):
+                    locus_tag_attr = feature.attributes.get('locus_tag', [None])[0]
+                    if locus_tag_attr == gene_id:
+                        return (feature.start, feature.end, feature.seqid)
         except Exception as e:
             self._log_error(
                 "GENE_LOOKUP_ERROR", 
-                f"Failed to find gene {gene_id} in GFF database", 
+                f"Failed to find gene {gene_id} in GFF database using all strategies", 
                 exception=e
             )
-            pass
         
         return None, None, None
     
@@ -781,12 +945,12 @@ class DefenseExtractor:
         return SeqIO.index_db(index_file)
     
     def _extract_protein_id(self, seq_id, hit_ids):
-        """Extract the protein ID from a sequence ID using the hit IDs for matching"""
-        # try direct match
+        """Extract the protein ID from a sequence ID using multiple matching strategies"""
+        # 1 - direct match
         if seq_id in hit_ids:
             return seq_id
-            
-        # try to extract from sequence ID
+        
+        # 3 - substring match in sequence ID    
         for hit_id in hit_ids:
             if hit_id in seq_id:
                 return hit_id
