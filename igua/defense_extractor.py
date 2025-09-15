@@ -944,9 +944,21 @@ class DefenseExtractor:
             return SeqIO.index_db(index_file, fasta_file, "fasta")
         return SeqIO.index_db(index_file)
     
-    def _extract_protein_id(self, seq_id, hit_ids):
-        """Extract the protein ID from a sequence ID using multiple matching strategies"""
-        # 1 - direct match
+
+    def _extract_protein_id_from_record(self, record, seq_id, hit_ids):
+        """Extract protein ID from a sequence record using the record's description"""
+        # 1 - parse from FASTA description using regex
+        # look for [locus_tag=XXXXX] pattern in the record description
+        description = getattr(record, 'description', seq_id)
+        
+        import re
+        locus_tag_match = re.search(r'\[locus_tag=([^\]]+)\]', description)
+        if locus_tag_match:
+            locus_tag = locus_tag_match.group(1)
+            if locus_tag in hit_ids:
+                return locus_tag
+        
+        # 2 - direct match with sequence ID
         if seq_id in hit_ids:
             return seq_id
         
@@ -954,10 +966,58 @@ class DefenseExtractor:
         for hit_id in hit_ids:
             if hit_id in seq_id:
                 return hit_id
+        
+        # 4 - substring match in full description
+        for hit_id in hit_ids:
+            if hit_id in description:
+                return hit_id
                 
-        # Default to sequence ID if no match
-        return seq_id
-    
+        # default: return the first hit_id as fallback (maintains functionality)
+        # but log this as it might indicate a matching problem
+        fallback_id = list(hit_ids)[0] if hit_ids else seq_id.split()[0]
+        if self.verbose and self.progress:
+            self.progress.console.print(
+                f"[bold yellow]{'Warning':>22}[/] Could not match seq_id '{seq_id[:50]}...' with hit_ids, using fallback: {fallback_id}"
+            )
+        return fallback_id
+
+    def _extract_protein_id(self, seq_id, hit_ids):
+        """Extract the protein ID from a sequence ID using multiple matching strategies"""
+        # 1 - direct match
+        if seq_id in hit_ids:
+            return seq_id
+
+        # 2 - substring match
+        for hit_id in hit_ids:
+            if hit_id in seq_id:
+                return hit_id
+        
+        # 3 - parse from FASTA header using regex
+        # look for [locus_tag=XXXXX] pattern
+        import re
+        locus_tag_match = re.search(r'\[locus_tag=([^\]]+)\]', seq_id)
+        if locus_tag_match:
+            locus_tag = locus_tag_match.group(1)
+            if locus_tag in hit_ids:
+                return locus_tag
+        
+        # 4 - extract from complex sequence ID formats
+        # handle formats like "lcl|NC_015593.1_prot_WP_013846339.1_1" 
+        # try to find a hit_id that appears anywhere in the seq_id
+        for hit_id in hit_ids:
+            if hit_id in seq_id:
+                return hit_id
+                
+        # default: return the first hit_id as fallback (maintains functionality)
+        # but log this as it might indicate a matching problem
+        fallback_id = list(hit_ids)[0] if hit_ids else seq_id
+        if self.verbose and self.progress:
+            self.progress.console.print(
+                f"[bold yellow]{'Warning':>22}[/] Could not match seq_id '{seq_id[:50]}...' with hit_ids, using fallback: {fallback_id}"
+            )
+        return fallback_id
+
+
     # @profiler.profile_function
     def _write_fasta(self, handle, seq_id, description, sequence):
         """Write a sequence in FASTA format"""
