@@ -918,30 +918,160 @@ class DefenseExtractor:
         except Exception:
             pass
 
-        # 3 - query by locus_tag attribute (slower but comprehensive)
+        # 3 - enhanced MAG format parsing (MAGid~contigID_geneIndex)
         try:
-            # check both gene and CDS features
-            for feature_type in ['gene', 'CDS']:
-                for feature in db.features_of_type(feature_type):
-                    locus_tag_attr = feature.attributes.get('locus_tag', [None])[0]
-                    if locus_tag_attr == gene_id:
-                        return (feature.start, feature.end, feature.seqid)
+            if '~' in gene_id and '_' in gene_id:
+                # parse MAG format: MAGid~contigID_geneIndex
+                # example: '20100900_E1D_4~c_000000000699_10'
+                parts = gene_id.split('~')
+                if len(parts) == 2:
+                    mag_id = parts[0]  # '20100900_E1D_4'
+                    contig_gene = parts[1]  # 'c_000000000699_10'
+                    
+                    if '_' in contig_gene:
+                        # split from the right to handle contig names with underscores
+                        contig_id, gene_index = contig_gene.rsplit('_', 1)  # 'c_000000000699', '10'
+                        
+                        # try multiple MAG-based ID patterns commonly found in GFF files
+                        mag_patterns = [
+                            f"{mag_id}~{contig_id}_{gene_index}",                            
+                            # no MAG prefix (contig + gene only)
+                            f"{contig_id}_{gene_index}",                            
+                            # with gene- prefix (standard GFF format)
+                            f"gene-{mag_id}~{contig_id}_{gene_index}",
+                            f"gene-{contig_id}_{gene_index}",
+                            # underscore separator instead of tilde
+                            f"{mag_id}_{contig_id}_{gene_index}",
+                            
+                            # CDS format variations
+                            f"cds-{mag_id}~{contig_id}_{gene_index}",
+                            f"cds-{contig_id}_{gene_index}",
+                            
+                            # Prokka/PGAP style with sequence ID
+                            f"{contig_id}_{gene_index:0>5}",  # Zero-padded gene index
+                            f"{mag_id}_{contig_id}_{gene_index:0>5}",
+                            
+                            # alternative separators
+                            f"{mag_id}-{contig_id}_{gene_index}",
+                            f"{mag_id}.{contig_id}_{gene_index}",
+                            
+                            contig_id,
+                            
+                            # MAG-specific variations?
+                            f"{mag_id}~{contig_id}_gene_{gene_index}",
+                            f"{contig_id}_gene_{gene_index}",
+                            f"gene_{gene_index}",
+                        ]
+                        
+                        for pattern in mag_patterns:
+                            try:
+                                feature = db[pattern]
+                                if feature.featuretype in ['gene', 'CDS', 'mRNA', 'pseudogene', 'tRNA', 'rRNA']:
+                                    return (feature.start, feature.end, feature.seqid)
+                            except Exception:
+                                continue
+        except Exception:
+                pass
+
+        # 4 - attribute-based lookup with MAG-aware search
+        try:
+            if '~' in gene_id and '_' in gene_id:
+                # parse components for attribute-based search
+                parts = gene_id.split('~')
+                if len(parts) == 2:
+                    mag_id = parts[0]
+                    contig_gene = parts[1]
+                    contig_id, gene_index = contig_gene.rsplit('_', 1)
+                    
+                    # search by various attribute combinations
+                    for feature_type in ['gene', 'CDS', 'mRNA', 'pseudogene']:
+                        for feature in db.features_of_type(feature_type):
+                            attrs = feature.attributes
+                            
+                            # check various attribute patterns
+                            search_patterns = [
+                                gene_id,  # exact match
+                                f"{contig_id}_{gene_index}",  # without MAG
+                                f"{mag_id}_{contig_id}_{gene_index}",  # underscore format
+                                contig_id,  # just contig
+                                gene_index,  # just gene index
+                            ]
+                            
+                            # check all attributes for matches
+                            for attr_key, attr_values in attrs.items():
+                                if isinstance(attr_values, list):
+                                    attr_values = [str(v) for v in attr_values]
+                                else:
+                                    attr_values = [str(attr_values)]
+                                
+                                for pattern in search_patterns:
+                                    if str(pattern) in attr_values:
+                                        return (feature.start, feature.end, feature.seqid)
+                                    
+                            # special check for ID attribute containing our components
+                            id_attr = attrs.get('ID', [''])[0]
+                            if any(component in str(id_attr) for component in [mag_id, contig_id, gene_index]):
+                                return (feature.start, feature.end, feature.seqid)
+            else:
+                # standard locus_tag attribute search for non-MAG formats
+                for feature_type in ['gene', 'CDS']:
+                    for feature in db.features_of_type(feature_type):
+                        locus_tag_attr = feature.attributes.get('locus_tag', [None])[0]
+                        if locus_tag_attr == gene_id:
+                            return (feature.start, feature.end, feature.seqid)
         except Exception as e:
             self._log_error(
                 "GENE_LOOKUP_ERROR", 
                 f"Failed to find gene {gene_id} in GFF database using all strategies", 
                 exception=e
             )
+
+        # 5 - positional search for MAG contigs
+        try:
+            if '~' in gene_id and '_' in gene_id:
+                parts = gene_id.split('~')
+                if len(parts) == 2:
+                    mag_id = parts[0]
+                    contig_gene = parts[1]
+                    contig_id, gene_index = contig_gene.rsplit('_', 1)
+                    
+                    try:
+                        gene_index_int = int(gene_index)
+                        
+                        # find genes on the specific contig and get the nth gene
+                        contig_genes = []
+                        for feature_type in ['gene', 'CDS']:
+                            for feature in db.features_of_type(feature_type):
+                                # check if feature is on our contig
+                                if (feature.seqid == contig_id or 
+                                    contig_id in feature.seqid or 
+                                    feature.seqid.endswith(contig_id)):
+                                    contig_genes.append(feature)
+                        
+                        # sort by position and get the gene at the specified index
+                        contig_genes.sort(key=lambda x: x.start)
+                        if 1 <= gene_index_int <= len(contig_genes):
+                            target_gene = contig_genes[gene_index_int - 1]  # 1-based indexing
+                            return (target_gene.start, target_gene.end, target_gene.seqid)
+                            
+                    except ValueError:
+                        pass  # gene_index is not an integer
+        except Exception:
+            pass
         
         return None, None, None
     
     def _create_fasta_index(self, fasta_file, reindex=False):
-        """Create an index for a FASTA file"""
-        index_file = f"{fasta_file}.idx"
-        if reindex or not os.path.exists(index_file):
-            return SeqIO.index_db(index_file, fasta_file, "fasta")
-        return SeqIO.index_db(index_file)
-    
+        """Create an in-memory index for a FASTA file"""
+        try:
+            return SeqIO.index(fasta_file, "fasta")
+        except Exception as e:
+            self._log_error(
+                "INDEX_ERROR", f"Failed to create FASTA index for {fasta_file}", 
+                exception=e
+            )
+            self.console.print(f"[bold red]Error:[/] Failed to index {os.path.basename(fasta_file)}: {str(e)}")
+            return None
 
     def _extract_protein_id_from_record(self, record, seq_id, hit_ids):
         """Extract protein ID from a sequence record using the record's description"""
