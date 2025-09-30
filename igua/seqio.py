@@ -215,15 +215,20 @@ class DefenseFinderDataset(BaseDataset):
         Returns:
             DataFrame with cluster_id, cluster_length, filename
         """
+        ### why write to a tmp dir maybe can be simplified 
         temp_dir = None
         if self.write_output and not self.output_dir:
             temp_dir = tempfile.TemporaryDirectory()
             output_dir = pathlib.Path(temp_dir.name)
         else:
-            output_dir = self.output_dir
+            # output_dir for logging 
+            if self.output_dir:
+                output_dir = pathlib.Path(self.output_dir)
+            else:
+                output_dir = pathlib.Path.cwd()
         
         try:
-            # Create extractor
+            # create extractor
             extractor = DefenseExtractor(
                 progress=progress,
                 output_base_dir=output_dir,
@@ -255,9 +260,10 @@ class DefenseFinderDataset(BaseDataset):
         """Process defense systems from a TSV file with paths to defense finder files."""
         # create extractor if not provided
         if extractor is None:
+            output_base_dir = pathlib.Path(self.output_dir) if self.output_dir else pathlib.Path.cwd()
             extractor = DefenseExtractor(
                 progress=progress,
-                output_base_dir=self.output_dir,
+                output_base_dir=output_base_dir,
                 write_output=self.write_output, 
                 verbose=self.verbose
             )
@@ -374,7 +380,11 @@ class DefenseFinderDataset(BaseDataset):
             temp_dir = tempfile.TemporaryDirectory()
             output_dir = pathlib.Path(temp_dir.name)
         else:
-            output_dir = self.output_dir
+            # output_dir for logging 
+            if self.output_dir:
+                output_dir = pathlib.Path(self.output_dir)
+            else:
+                output_dir = pathlib.Path.cwd()
         
         try:
             # create extractor
@@ -409,9 +419,10 @@ class DefenseFinderDataset(BaseDataset):
         """Extract proteins from defense systems specified in a TSV file."""
         # Create extractor if not provided
         if extractor is None:
+            output_base_dir = pathlib.Path(self.output_dir) if self.output_dir else pathlib.Path.cwd()
             extractor = DefenseExtractor(
                 progress=progress,
-                output_base_dir=self.output_dir,
+                output_base_dir=output_base_dir,
                 write_output=self.write_output, 
                 verbose=self.verbose
             )
@@ -444,7 +455,8 @@ class DefenseFinderDataset(BaseDataset):
                 # extract gene sequences
                 strain_output_dir = None
                 if self.write_output and self.output_dir:
-                    strain_output_dir = self.output_dir / (strain_id if strain_id else "unknown") / "proteins"
+                    output_base_path = pathlib.Path(self.output_dir)
+                    strain_output_dir = output_base_path / (strain_id if strain_id else "unknown") / "proteins"
                     strain_output_dir.mkdir(parents=True, exist_ok=True)
                 
                 # all systems' proteins extracted 
@@ -452,7 +464,7 @@ class DefenseFinderDataset(BaseDataset):
                     systems_tsv_file=systems_tsv,
                     genes_tsv_file=genes_tsv,
                     faa_file=faa_file,
-                    fna_file=fna_file if fna_file.exists() else None,
+                    fna_file=fna_file,
                     output_dir=strain_output_dir,
                     strain_id=strain_id, 
                     activity_filter=self.activity_filter,

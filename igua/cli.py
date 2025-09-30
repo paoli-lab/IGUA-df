@@ -269,9 +269,9 @@ def create_dataset(
                     dataset = DefenseFinderDataset()
                     dataset.defense_metadata = input_file
                     dataset.write_output = getattr(args, 'write_defense_systems', None) is not None
-                    dataset.output_dir = getattr(args, 'write_defense_systems', None)
+                    dataset.output_dir = getattr(args, 'write_defense_systems', args.output.parent)
                     dataset.verbose = getattr(args, 'defense_finder_verbose', False)
-                    dataset.activity_filter = getattr(args, 'activity', 'defense')  # Add activity filter
+                    dataset.activity_filter = getattr(args, 'activity', 'defense') 
                     return dataset
                 
                 progress.console.print(f"[yellow]{'Warning':>12}[/] TSV file found but header doesn't match DefenseFinder format")

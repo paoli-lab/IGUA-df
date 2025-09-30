@@ -11,6 +11,7 @@ import io
 from Bio import SeqIO
 from typing import Dict, List, Tuple, Optional, Union, Any, Container, Iterable
 import traceback
+import tempfile
 
 
 import rich.progress
@@ -33,7 +34,7 @@ class DefenseExtractor:
         output_base_dir: Optional[pathlib.Path] = None,
         write_output: bool = False,
         verbose: bool = False,
-        extract_nucleotides: bool = False,  # Toggle for nucleotide extraction (disabled by default for efficiency)
+        extract_nucleotides: bool = False,  # nucleotide seqs not extracted by default, useful for debugging
     ):
         self.progress = progress
         self.output_base_dir = output_base_dir
@@ -1186,9 +1187,13 @@ class DefenseExtractor:
     def _log_error(self, error_type, message, strain_id=None, system_id=None, files=None, exception=None):
         """Log error information"""
         
-        # skip logging if no output directory
+        # use workdir or temp directory if no output_base_dir set
         if not self.output_base_dir:
-            return None
+            log_dir = tempfile.gettempdir()
+            log_file = os.path.join(log_dir, "igua_defense_extraction_errors.log")
+        else:
+            log_file = os.path.join(str(self.output_base_dir), "defense_extraction_errors.log")
+        
             
         timestamp = time.strftime("%Y-%m-%d %H:%M:%S")
         log_message = f"[{timestamp}] {error_type}: {message}\n"
@@ -1209,12 +1214,9 @@ class DefenseExtractor:
             log_message += f"  Exception: {str(exception)}\n"
             if hasattr(exception, "__traceback__"):
                 log_message += f"  Traceback:\n{''.join(traceback.format_tb(exception.__traceback__))}\n"
-        
+
         log_message += "-" * 80 + "\n"
-        
-        log_file = os.path.join(str(self.output_base_dir), "defense_extraction_errors.log")
-        os.makedirs(os.path.dirname(log_file), exist_ok=True)
-        
+                
         with open(log_file, "a") as f:
             f.write(log_message)
         
