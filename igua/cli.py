@@ -2,6 +2,7 @@ import argparse
 import collections
 import contextlib
 import csv
+import datetime
 import errno
 import functools
 import itertools
@@ -392,6 +393,9 @@ def main(argv: typing.Optional[typing.List[str]] = None) -> int:
         argcomplete.autocomplete(parser)
     args = parser.parse_args(argv)
     
+    start_time = datetime.datetime.now()
+    start_time_str = start_time.strftime("%Y-%m-%d %H:%M:%S")
+    
 
     if args.workdir is None:
         workdir = pathlib.Path(tempfile.mkdtemp())
@@ -455,6 +459,9 @@ def main(argv: typing.Optional[typing.List[str]] = None) -> int:
                 *rich.progress.Progress.get_default_columns(),
             )
         )
+        
+        progress.console.print(f"[bold blue]{'Started':>12}[/] {start_time_str}")
+        
         mmseqs = MMSeqs(progress=progress, threads=args.jobs, tempdir=workdir)
 
         # check mmseqs version
@@ -704,5 +711,23 @@ def main(argv: typing.Optional[typing.List[str]] = None) -> int:
             progress.console.print(
                 f"[bold green]{'Saved':>12}[/] protein features to {str(args.features)!r}"
             )
+
+    end_time = datetime.datetime.now()
+    end_time_str = end_time.strftime("%Y-%m-%d %H:%M:%S")
+    total_time = end_time - start_time
+    
+    total_seconds = int(total_time.total_seconds())
+    hours, remainder = divmod(total_seconds, 3600)
+    minutes, seconds = divmod(remainder, 60)
+    
+    if hours > 0:
+        time_str = f"{hours}h {minutes}m {seconds}s"
+    elif minutes > 0:
+        time_str = f"{minutes}m {seconds}s"
+    else:
+        time_str = f"{seconds}s"
+    
+    progress.console.print(f"[bold blue]{'Completed':>12}[/] {end_time_str}")
+    progress.console.print(f"[bold green]{'Total time':>12}[/] {time_str}")
 
     return 0
