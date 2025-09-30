@@ -1,13 +1,17 @@
 import os
 import pathlib
 import pandas as pd
+import re
+import gc
+import time
 import tempfile
 import uuid
 import gffutils
 import io
 from Bio import SeqIO
-from typing import Dict, List, Tuple, Optional, Union, Any
-import gc
+from typing import Dict, List, Tuple, Optional, Union, Any, Container, Iterable
+import traceback
+
 
 import rich.progress
 from rich.console import Console
@@ -29,12 +33,14 @@ class DefenseExtractor:
         output_base_dir: Optional[pathlib.Path] = None,
         write_output: bool = False,
         verbose: bool = False,
+        extract_nucleotides: bool = False,  # Toggle for nucleotide extraction (disabled by default for efficiency)
     ):
         self.progress = progress
         self.output_base_dir = output_base_dir
         self.write_output = write_output
         self.console = progress.console if progress else Console()
         self.verbose = verbose
+        self.extract_nucleotides = extract_nucleotides
 
     def _get_unique_strain_id(self, strain_id: Optional[str]) -> str:
         """Get or create a unique strain identifier"""
@@ -469,6 +475,7 @@ class DefenseExtractor:
         output_dir: Optional[Union[pathlib.Path, str]] = None,
         strain_id: Optional[str] = None,
         activity_filter: str = "defense",
+        representatives: Optional[Container[str]] = None,
     ) -> Dict[str, Dict[str, Any]]:
         """
         Extract gene sequences (protein and nucleotide) for defense systems
@@ -480,6 +487,8 @@ class DefenseExtractor:
             fna_file: Path to nucleotide FASTA file
             output_dir: Directory to write output files (if write_output=True)
             strain_id: Optional strain identifier
+            activity_filter: Filter systems by activity type (default: "defense")
+            representatives: Optional set of representative cluster IDs to extract (for efficiency)
             
         Returns:
             Dictionary mapping system_id to gene sequence data
@@ -532,6 +541,29 @@ class DefenseExtractor:
                     # warnings have already been logged
                     systems_df = systems_df.drop_duplicates(keep='first')
 
+                # representatives filtering (for computational efficiency)
+                if representatives is not None:
+                    clean_strain = self._get_unique_strain_id(strain_id)
+                    # unique system IDs to match against representatives
+                    systems_df['unique_sys_id'] = clean_strain + '@' + systems_df['sys_id']
+                    original_count = len(systems_df)
+                    
+                    try:
+                        # try iterable first
+                        systems_df = systems_df[systems_df['unique_sys_id'].isin(representatives)]
+                    except TypeError:
+                        # __contains__ method for non-iterable containers
+                        mask = systems_df['unique_sys_id'].apply(lambda x: x in representatives)
+                        systems_df = systems_df[mask]
+                    
+                    filtered_count = len(systems_df)
+                    
+                    if self.verbose and self.progress:
+                        self.progress.console.print(
+                            f"[bold cyan]{'Filtered':>12}[/] {original_count} systems to {filtered_count} "
+                            f"representatives for {strain_id}"
+                        )
+
                 genes_df = pd.read_csv(genes_tsv_file, sep='\t')
             except Exception as e:
                 self._log_error(
@@ -546,12 +578,14 @@ class DefenseExtractor:
             try:
                 if os.path.exists(faa_file) and os.path.isfile(faa_file): 
                     faa_index = self._create_fasta_index(faa_file)
-                if os.path.exists(fna_file) and os.path.isfile(fna_file): 
+                # only create nucleotide index if extraction is enabled
+                # useful for debugging but not functional 
+                if self.extract_nucleotides and os.path.exists(fna_file) and os.path.isfile(fna_file): 
                     fna_index = self._create_fasta_index(fna_file)
                     
-                # at least one index was created
-                if faa_index is None and fna_index is None:
-                    self.console.print(f"[bold red]Error:[/] No valid FASTA files provided")
+                # at least protein index must be created
+                if faa_index is None:
+                    self.console.print(f"[bold red]Error:[/] No valid protein FASTA file provided")
                     return {}
                     
             except Exception as e:
@@ -588,7 +622,11 @@ class DefenseExtractor:
 
         total_proteins = sum(len(system.get('proteins', {})) for system in results.values())
         total_nucleotides = sum(len(system.get('nucleotides', {})) for system in results.values())
-        progress.console.print(f"[bold green]{'Extracted':>12}[/] {total_proteins} proteins and {total_nucleotides} nucleotides from {len(results)} systems for [bold cyan]{strain_id}[/]")
+        
+        if self.extract_nucleotides:
+            progress.console.print(f"[bold green]{'Extracted':>12}[/] {total_proteins} proteins and {total_nucleotides} nucleotides from {len(results)} systems for [bold cyan]{strain_id}[/]")
+        else:
+            progress.console.print(f"[bold green]{'Extracted':>12}[/] {total_proteins} proteins from {len(results)} systems for [bold cyan]{strain_id}[/]")
 
         return results
     
@@ -762,9 +800,9 @@ class DefenseExtractor:
                     if progress:
                         progress.console.print(f"[bold red]Error:[/] Failed to process protein sequences for {system_id}: {str(e)}")
             
-            # process nucleotide sequences only if fna_index exists
+            # process nucleotide sequences only if extraction is enabled and fna_index exists
             fna_count = 0
-            if fna_index is not None:
+            if self.extract_nucleotides and fna_index is not None:
                 fna_buffer = io.StringIO() if not self.write_output else None
                 
                 try:
@@ -803,24 +841,19 @@ class DefenseExtractor:
                     )
                     if progress:
                         progress.console.print(f"[bold red]Error:[/] Failed to process nucleotide sequences for system {system_id}: {str(e)}")
-            # process nucleotide sequences
-            fna_count = self._process_sequence_type(
-                fna_index, fna_matching, hit_ids, system_id, "nucleotide",
-                fna_out, result, files_dict, strain_id, progress
-            )
             
             if self.write_output:
                 if faa_out and faa_index is not None:
                     result["faa_file"] = faa_out
-                if fna_out and fna_index is not None:
+                if self.extract_nucleotides and fna_out and fna_index is not None:
                     result["fna_file"] = fna_out
             
             if progress and self.verbose:
-                if faa_index is not None and fna_index is not None:
+                if faa_index is not None and self.extract_nucleotides and fna_index is not None:
                     progress.console.print(f"[bold blue]{'Extracted':>22}[/] {faa_count} proteins and {fna_count} nucleotides from [cyan]{system_id}[/] system")
                 elif faa_index is not None:
                     progress.console.print(f"[bold green]{'Extracted':>22}[/] {faa_count} proteins from [cyan]{system_id}[/] system")
-                elif fna_index is not None:
+                elif self.extract_nucleotides and fna_index is not None:
                     progress.console.print(f"[bold green]{'Extracted':>22}[/] {fna_count} nucleotides from [cyan]{system_id}[/] system")
                 else:
                     progress.console.print(f"[bold yellow]{'Warning':>22}[/] No sequences extracted for [cyan]{system_id}[/] system")
@@ -865,7 +898,6 @@ class DefenseExtractor:
                 # look for [locus_tag=XXXXX] pattern in sequence description
                 if hasattr(seq_record, 'description'):
                     description = seq_record.description
-                    import re
                     locus_tag_match = re.search(r'\[locus_tag=([^\]]+)\]', description)
                     if locus_tag_match:
                         locus_tag = locus_tag_match.group(1)
@@ -1079,7 +1111,6 @@ class DefenseExtractor:
         # look for [locus_tag=XXXXX] pattern in the record description
         description = getattr(record, 'description', seq_id)
         
-        import re
         locus_tag_match = re.search(r'\[locus_tag=([^\]]+)\]', description)
         if locus_tag_match:
             locus_tag = locus_tag_match.group(1)
@@ -1122,7 +1153,6 @@ class DefenseExtractor:
         
         # 3 - parse from FASTA header using regex
         # look for [locus_tag=XXXXX] pattern
-        import re
         locus_tag_match = re.search(r'\[locus_tag=([^\]]+)\]', seq_id)
         if locus_tag_match:
             locus_tag = locus_tag_match.group(1)
@@ -1155,8 +1185,6 @@ class DefenseExtractor:
     
     def _log_error(self, error_type, message, strain_id=None, system_id=None, files=None, exception=None):
         """Log error information"""
-        import time
-        import traceback
         
         # skip logging if no output directory
         if not self.output_base_dir:

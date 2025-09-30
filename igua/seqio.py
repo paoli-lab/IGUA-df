@@ -455,17 +455,13 @@ class DefenseFinderDataset(BaseDataset):
                     fna_file=fna_file if fna_file.exists() else None,
                     output_dir=strain_output_dir,
                     strain_id=strain_id, 
-                    activity_filter=self.activity_filter
+                    activity_filter=self.activity_filter,
+                    representatives=representatives
                 )
                 
                 # write proteins to output file and record sizes
-                # filter by representatives at this stage 
+                # filtering happens inside extract_gene_sequences 
                 for sys_id, system in gene_data.items():
-                    
-                    # skip if not in representatives 
-                    if representatives and sys_id not in representatives:
-                        continue
-
                     # write proteins from representative clusters
                     for prot_id, protein in system.get("proteins", {}).items():
                         # unique protein ID already created by DefenseExtractor
@@ -485,8 +481,17 @@ class DefenseFinderDataset(BaseDataset):
             
             progress.remove_task(task)
         
+        # report proteins extracted 
+        rep_count = "all"
+        if representatives:
+            try:
+                rep_count = str(len(representatives))  # type: ignore
+            except TypeError:
+                rep_count = "specified"
+        
         progress.console.print(
-            f"[bold green]{'Extracted':>12}[/] {len(protein_sizes)} proteins from {len(representatives)} representative systems"
+            f"[bold green]{'Extracted':>12}[/] {len(protein_sizes)} proteins from "
+            f"{rep_count} representative systems"
             )
         return protein_sizes
 
