@@ -234,8 +234,8 @@ def build_parser() -> argparse.ArgumentParser:
     )
     group_defense.add_argument(
         "--activity",
-        help="Filter by defense system activity: 'defense' (default), 'antidefense', 'all'",
-        default="defense",
+        help="Filter by defense system activity: 'all' (default), 'defense', 'antidefense'",
+        default="all",
         choices={
             "defense",
             "antidefense",
