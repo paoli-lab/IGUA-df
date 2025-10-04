@@ -228,11 +228,6 @@ def build_parser() -> argparse.ArgumentParser:
         type=pathlib.Path,
     )
     group_defense.add_argument(
-        "--write-defense-systems",
-        help="Write extracted defense systems to this directory",
-        type=pathlib.Path,
-    )
-    group_defense.add_argument(
         "--activity",
         help="Filter by defense system activity: 'all' (default), 'defense', 'antidefense'",
         default="all",
@@ -269,8 +264,7 @@ def create_dataset(
                     progress.console.print(f"[bold blue]{'Detected':>12}[/] DefenseFinder metadata TSV format")
                     dataset = DefenseFinderDataset()
                     dataset.defense_metadata = input_file
-                    dataset.write_output = getattr(args, 'write_defense_systems', None) is not None
-                    dataset.output_dir = getattr(args, 'write_defense_systems', args.output.parent)
+                    dataset.output_dir = getattr(args.output, "parent")
                     dataset.verbose = getattr(args, 'defense_finder_verbose', False)
                     dataset.activity_filter = getattr(args, 'activity', 'defense') 
                     return dataset

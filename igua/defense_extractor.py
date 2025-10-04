@@ -32,13 +32,11 @@ class DefenseExtractor:
         self, 
         progress: Optional[rich.progress.Progress] = None,
         output_base_dir: Optional[pathlib.Path] = None,
-        write_output: bool = False,
         verbose: bool = False,
         extract_nucleotides: bool = False,  # nucleotide seqs not extracted by default, useful for debugging
     ):
         self.progress = progress
         self.output_base_dir = output_base_dir
-        self.write_output = write_output
         self.console = progress.console if progress else Console()
         self.verbose = verbose
         self.extract_nucleotides = extract_nucleotides
@@ -258,7 +256,7 @@ class DefenseExtractor:
                 strain_id=strain_id, system_id=sys_id, files=system_files,
                 exception={"start_seq_id": start_seq_id, "end_seq_id": end_seq_id}
             )
-            self.console.print(f"[bold yellow]{'Warning':>12}[/] System {sys_id} spans multiple sequences")
+            self.console.print(f"[bold yellow]{'Warning':>12}[/] system {sys_id} spans multiple sequences")
             return None
             
         seq_id = start_seq_id
@@ -266,7 +264,7 @@ class DefenseExtractor:
         # swap coordinate order if needed
         if system_start > system_end:
             system_start, system_end = system_end, system_start
-            self.console.print(f"[bold yellow]{'Warning':>12}[/] System {sys_id} coordinates swapped: start > end.")
+            self.console.print(f"[bold yellow]{'Warning':>12}[/] system {sys_id} coordinates swapped: start > end.")
 
         # raise warning for suspiciously large regions >1e4 
         region_size = system_end - system_start + 1
@@ -275,9 +273,9 @@ class DefenseExtractor:
                 "LARGE_REGION_WARNING", f"System region too large: {region_size} bp", 
                 strain_id=strain_id, system_id=sys_id, files=system_files
             )
-            self.console.print(f"[bold yellow]{'Warning':>12}[/] System [cyan]{sys_id}[/] region too large: {region_size} bp.")
+            self.console.print(f"[bold yellow]{'Warning':>12}[/] system [cyan]{sys_id}[/] region too large: {region_size} bp.")
         
-        # extract genomic sequence, store and write if needed
+        # extract genomic sequence, store if needed
         if seq_id not in genome_dict:
             self._log_error(
                 "SEQUENCE_ID_ERROR", f"Sequence ID {seq_id} not found in genome", 
@@ -304,13 +302,6 @@ class DefenseExtractor:
                 "unique_sys_id": unique_sys_id
             }
             
-            if self.write_output and output_dir:
-                output_file = os.path.join(str(output_dir), f"{unique_sys_id}.fasta")
-                with open(output_file, "w") as out:
-                    out.write(f">{unique_sys_id} OriginalID:{sys_id} Strain:{strain_id} Type:{system['type']} Subtype:{system['subtype'] if 'subtype' in system and pd.notna(system['subtype']) else 'NA'} Length:{sequence_length}bp\n")
-                    out.write(str(sequence) + "\n")
-                result["file_path"] = output_file
-                
             if self.verbose: 
                 self.console.print(f"[bold blue]{'Extracted':>22}[/] genomic sequence for [cyan]{sys_id}[/] system ({sequence_length} bp)")
             
@@ -320,7 +311,7 @@ class DefenseExtractor:
             
         except Exception as e:
             self._log_error(
-                "SEQUENCE_EXTRACTION_ERROR", "Failed to extract or write sequence", 
+                "SEQUENCE_EXTRACTION_ERROR", "Failed to extract sequence", 
                 strain_id=strain_id, system_id=sys_id, files=system_files, exception=e
             )
             self.console.print(f"[bold red]Error:[/] Failed to extract sequence for {sys_id}: {str(e)}")
@@ -345,16 +336,13 @@ class DefenseExtractor:
             genes_tsv_file: Path to DefenseFinder genes TSV
             gff_file: Path to GFF annotation file
             fasta_file: Path to genome FASTA file
-            output_dir: Directory to write output files (if write_output=True)
+            output_dir: Directory to write output files
             gff_cache_dir: Directory to cache GFF databases
             strain_id: Optional strain identifier
             
         Returns:
             Dictionary mapping system_id to sequence data and metadata
         """
-        if self.write_output and output_dir:
-            os.makedirs(output_dir, exist_ok=True)
-        
         unique_id = str(uuid.uuid4())
         
         # Setup file dictionary for error logging
@@ -486,7 +474,7 @@ class DefenseExtractor:
             genes_tsv_file: Path to DefenseFinder genes TSV
             faa_file: Path to protein FASTA file
             fna_file: Path to nucleotide FASTA file
-            output_dir: Directory to write output files (if write_output=True)
+            output_dir: Directory to write output files
             strain_id: Optional strain identifier
             activity_filter: Filter systems by activity type (default: "defense")
             representatives: Optional set of representative cluster IDs to extract (for efficiency)
@@ -494,9 +482,6 @@ class DefenseExtractor:
         Returns:
             Dictionary mapping system_id to gene sequence data
         """
-        if self.write_output and output_dir:
-            os.makedirs(output_dir, exist_ok=True)
-            
         # files for error logging
         files_dict = {
             "systems_tsv": systems_tsv_file,
@@ -647,8 +632,8 @@ class DefenseExtractor:
         """Helper function to process protein or nucleotide sequences"""
         if index is None:
             return 0
-            
-        buffer = io.StringIO() if not self.write_output else None
+        
+        buffer = None
         count = 0
         
         try:
@@ -675,7 +660,6 @@ class DefenseExtractor:
                     unique_key: modified_id
                 }
                 
-                self._write_fasta(out_handle, modified_id, modified_desc, str(record.seq))
                 count += 1
                 
             if output_file and out_handle:
@@ -715,8 +699,6 @@ class DefenseExtractor:
         if output_dir:
             files_dict.update({
                 "output_dir": output_dir,
-                "faa_output": os.path.join(str(output_dir), f"{system_id}.faa") if self.write_output else None,
-                "fna_output": os.path.join(str(output_dir), f"{system_id}.fna") if self.write_output else None
             })
         
         # filter only genes for this system
@@ -733,9 +715,6 @@ class DefenseExtractor:
             return {}
         
         hit_ids = set(system_genes['hit_id'].unique())
-        
-        faa_out = os.path.join(str(output_dir), f"{system_id}.faa") if self.write_output and output_dir else None
-        fna_out = os.path.join(str(output_dir), f"{system_id}.fna") if self.write_output and output_dir else None
         
         result = {
             "system_id": system_id,
@@ -760,11 +739,9 @@ class DefenseExtractor:
             faa_count = 0
             # process protein sequences only if faa_index exists
             if faa_index is not None:
-                faa_buffer = io.StringIO() if not self.write_output else None
+                faa_buffer = io.StringIO()
                 
                 try:
-                    out_handle = open(faa_out, "w") if faa_out else faa_buffer
-                    
                     for seq_id in faa_matching:
                         record = faa_index[seq_id]
                         
@@ -783,12 +760,9 @@ class DefenseExtractor:
                             "unique_protein_id": modified_id
                         }
                         
-                        self._write_fasta(out_handle, modified_id, modified_desc, str(record.seq))
                         faa_count += 1
                         
-                    if faa_out and out_handle:
-                        out_handle.close()
-                    elif faa_buffer:
+                    if faa_buffer:
                         # store buffer content in result
                         result["protein_fasta"] = faa_buffer.getvalue()
                         faa_buffer.close()
@@ -804,11 +778,9 @@ class DefenseExtractor:
             # process nucleotide sequences only if extraction is enabled and fna_index exists
             fna_count = 0
             if self.extract_nucleotides and fna_index is not None:
-                fna_buffer = io.StringIO() if not self.write_output else None
+                fna_buffer = io.StringIO()
                 
                 try:
-                    out_handle = open(fna_out, "w") if fna_out else fna_buffer
-                    
                     for seq_id in fna_matching:
                         record = fna_index[seq_id]
                         nucleotide_id = self._extract_protein_id_from_record(record, seq_id, hit_ids)
@@ -825,12 +797,9 @@ class DefenseExtractor:
                             "unique_nucleotide_id": modified_id
                         }
                         
-                        self._write_fasta(out_handle, modified_id, modified_desc, str(record.seq))
                         fna_count += 1
                         
-                    if fna_out and out_handle:
-                        out_handle.close()
-                    elif fna_buffer:
+                    if fna_buffer:
                         # store buffer content in result
                         result["nucleotide_fasta"] = fna_buffer.getvalue()
                         fna_buffer.close()
@@ -842,12 +811,6 @@ class DefenseExtractor:
                     )
                     if progress:
                         progress.console.print(f"[bold red]Error:[/] Failed to process nucleotide sequences for system {system_id}: {str(e)}")
-            
-            if self.write_output:
-                if faa_out and faa_index is not None:
-                    result["faa_file"] = faa_out
-                if self.extract_nucleotides and fna_out and fna_index is not None:
-                    result["fna_file"] = fna_out
             
             if progress and self.verbose:
                 if faa_index is not None and self.extract_nucleotides and fna_index is not None:
@@ -1177,13 +1140,6 @@ class DefenseExtractor:
         return fallback_id
 
 
-    def _write_fasta(self, handle, seq_id, description, sequence):
-        """Write a sequence in FASTA format"""
-        handle.write(f">{description}\n")
-        handle.write(sequence)
-        handle.write("\n")
-        return None
-    
     def _log_error(self, error_type, message, strain_id=None, system_id=None, files=None, exception=None):
         """Log error information"""
         

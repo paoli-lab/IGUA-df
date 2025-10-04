@@ -193,7 +193,6 @@ class DefenseFinderDataset(BaseDataset):
         self.genome_file: typing.Optional[typing.Union[pathlib.Path, str]] = None  # FASTA file (genome sequence)
         self.protein_file: typing.Optional[typing.Union[pathlib.Path, str]] = None  # protein FASTA file
         self.gene_file: typing.Optional[typing.Union[pathlib.Path, str]] = None  # gene nucleotide FASTA file
-        self.write_output: bool = False  # write output files to self.output_dir
         self.output_dir: typing.Optional[typing.Union[pathlib.Path, str]] = None  # output directory for writing files
         self.verbose: bool = False  # verbose output
         self.activity_filter: str = "defense"
@@ -215,24 +214,17 @@ class DefenseFinderDataset(BaseDataset):
         Returns:
             DataFrame with cluster_id, cluster_length, filename
         """
-        ### why write to a tmp dir maybe can be simplified 
-        temp_dir = None
-        if self.write_output and not self.output_dir:
-            temp_dir = tempfile.TemporaryDirectory()
-            output_dir = pathlib.Path(temp_dir.name)
+        # output_dir for logging 
+        if self.output_dir:
+            output_dir = pathlib.Path(self.output_dir)
         else:
-            # output_dir for logging 
-            if self.output_dir:
-                output_dir = pathlib.Path(self.output_dir)
-            else:
-                output_dir = pathlib.Path.cwd()
+            output_dir = pathlib.Path.cwd()
         
         try:
             # create extractor
             extractor = DefenseExtractor(
                 progress=progress,
                 output_base_dir=output_dir,
-                write_output=self.write_output, 
                 verbose=self.verbose
             )
             
@@ -243,12 +235,8 @@ class DefenseFinderDataset(BaseDataset):
             except Exception as e:
                 progress.console.print(f"[bold red]{'Error':>12}[/] reading defense metadata: {e}")
                 return pandas.DataFrame(columns=["cluster_id", "cluster_length", "filename"]).set_index("cluster_id")
-            
-            
         finally:
-            # clean up temporary directory if created
-            if temp_dir:
-                temp_dir.cleanup()
+            pass
 
     def _process_defense_files_from_tsv(
         self,
@@ -264,7 +252,6 @@ class DefenseFinderDataset(BaseDataset):
             extractor = DefenseExtractor(
                 progress=progress,
                 output_base_dir=output_base_dir,
-                write_output=self.write_output, 
                 verbose=self.verbose
             )
         
@@ -303,9 +290,6 @@ class DefenseFinderDataset(BaseDataset):
                     
                     # extract systems for this strain only
                     strain_output_dir = None
-                    if self.write_output and self.output_dir:
-                        strain_output_dir = pathlib.Path(self.output_dir) / (strain_id if strain_id else "unknown")
-                        strain_output_dir.mkdir(parents=True, exist_ok=True)
                     
                     try:
                         systems = extractor.extract_systems(
@@ -375,23 +359,17 @@ class DefenseFinderDataset(BaseDataset):
         Returns:
             Dictionary mapping protein IDs to their lengths.
         """
-        temp_dir = None
-        if self.write_output and not self.output_dir:
-            temp_dir = tempfile.TemporaryDirectory()
-            output_dir = pathlib.Path(temp_dir.name)
+        # output_dir for logging 
+        if self.output_dir:
+            output_dir = pathlib.Path(self.output_dir)
         else:
-            # output_dir for logging 
-            if self.output_dir:
-                output_dir = pathlib.Path(self.output_dir)
-            else:
-                output_dir = pathlib.Path.cwd()
+            output_dir = pathlib.Path.cwd()
         
         try:
             # create extractor
             extractor = DefenseExtractor(
                 progress=progress,
                 output_base_dir=output_dir,
-                write_output=self.write_output, 
                 verbose=self.verbose
             )
 
@@ -404,9 +382,7 @@ class DefenseFinderDataset(BaseDataset):
                 return {}
             
         finally:
-            # Clean up temporary directory if created
-            if temp_dir:
-                temp_dir.cleanup()
+            pass
 
     def _extract_proteins_from_tsv(
         self,
@@ -423,7 +399,6 @@ class DefenseFinderDataset(BaseDataset):
             extractor = DefenseExtractor(
                 progress=progress,
                 output_base_dir=output_base_dir,
-                write_output=self.write_output, 
                 verbose=self.verbose
             )
         
@@ -452,20 +427,13 @@ class DefenseFinderDataset(BaseDataset):
                     progress.update(task, advance=1)
                     raise FileNotFoundError(f"Missing required files: {', '.join(missing_files)}")
                 
-                # extract gene sequences
-                strain_output_dir = None
-                if self.write_output and self.output_dir:
-                    output_base_path = pathlib.Path(self.output_dir)
-                    strain_output_dir = output_base_path / (strain_id if strain_id else "unknown") / "proteins"
-                    strain_output_dir.mkdir(parents=True, exist_ok=True)
-                
+                # extract gene sequences                
                 # all systems' proteins extracted 
                 gene_data = extractor.extract_gene_sequences(
                     systems_tsv_file=systems_tsv,
                     genes_tsv_file=genes_tsv,
                     faa_file=faa_file,
                     fna_file=fna_file,
-                    output_dir=strain_output_dir,
                     strain_id=strain_id, 
                     activity_filter=self.activity_filter,
                     representatives=representatives
