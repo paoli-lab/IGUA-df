@@ -224,7 +224,6 @@ class DefenseFinderDataset(BaseDataset):
             # create extractor
             extractor = DefenseExtractor(
                 progress=progress,
-                output_base_dir=output_dir,
                 verbose=self.verbose
             )
             
@@ -297,7 +296,6 @@ class DefenseFinderDataset(BaseDataset):
                             genes_tsv_file=genes_tsv,
                             gff_file=gff_file,
                             fasta_file=fasta_file,
-                            output_dir=strain_output_dir,
                             strain_id=strain_id,
                             activity_filter=self.activity_filter 
                         )
@@ -369,7 +367,6 @@ class DefenseFinderDataset(BaseDataset):
             # create extractor
             extractor = DefenseExtractor(
                 progress=progress,
-                output_base_dir=output_dir,
                 verbose=self.verbose
             )
 
