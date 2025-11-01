@@ -4,7 +4,9 @@ from pathlib import Path
 import pytest
 
 
-@pytest.mark.parametrize("ref_data_id", ['secretion_small', 'ecoli'])
+test_cases = ["secretion_small", "ecoli", "emerge"]
+
+@pytest.mark.parametrize("ref_data_id", test_cases)
 def test_gcfs_output_structure(ref_data_id):
     """Test gcfs output maintains expected structure"""
     gcfs = pd.read_csv(f"test_output/{ref_data_id}_gcfs.tsv", sep="\t")
@@ -22,7 +24,9 @@ def test_gcfs_output_structure(ref_data_id):
     assert gcfs["gcf_id"].str.startswith("GCF").all()
 
 
-@pytest.mark.parametrize("ref_data_id", ["secretion_small", "ecoli"])
+
+
+@pytest.mark.parametrize("ref_data_id", test_cases)
 def test_compositions_output(ref_data_id):
     """Test compositions output structure"""
     comp = anndata.read_h5ad(f"test_output/{ref_data_id}_compositions.h5ad")
@@ -33,7 +37,7 @@ def test_compositions_output(ref_data_id):
     # assert "size" in comp.var.columns
 
 
-@pytest.mark.parametrize("ref_data_id", ["secretion_small", "ecoli"])
+@pytest.mark.parametrize("ref_data_id", test_cases)
 def test_features_output(ref_data_id):
     """Test protein features FASTA"""
     features_path = Path(f"test_output/{ref_data_id}_features.fa")
