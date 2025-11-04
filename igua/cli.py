@@ -558,7 +558,7 @@ def main(argv: typing.Optional[typing.List[str]] = None) -> int:
                 if is_defense_finder and hasattr(dataset, 'defense_metadata') and dataset.defense_metadata:
                     # double underscore for DefenseFinder 
                     prot_clusters["cluster_id"] = (
-                            prot_clusters["protein_id"].str.rsplit("@@", n=1).str[0]
+                            prot_clusters["protein_id"].str.rsplit("__", n=1).str[0]
                         )
                 else:
                     # traditional format: use single underscore delimiter
