@@ -14,8 +14,8 @@ from pyfaidx import Fasta
 from rich.console import Console
 
 
-# [ ] cleanup and logging 
-# [ ] still problems with GFF and fasta lookup when substring
+# [ ] cleanup and logging needs tidying up
+# [ ] clean up hit_ids from systems tsv vs get_system_genes from genes tsv
 
 class GenomeContext:
     """Immutable data container for genome/strain file paths and metadata."""
@@ -82,10 +82,6 @@ class GenomeResources:
         self._protein_idx: Optional[Fasta] = None
         self._gff_db: Optional[gffutils.FeatureDB] = None
         self._gff_db_path: Optional[str] = None
-        self._gene_lookup_cache: Optional[Dict[str, str]] = None
-
-        # # track what needs cleanup
-        # self._temp_files = []
 
 
     @property
@@ -167,54 +163,6 @@ class GenomeResources:
             self._protein_idx = Fasta(str(self.context.protein_fasta))
         return self._protein_idx
 
-    # @property
-    # def gff_db(self) -> gffutils.FeatureDB:
-    #     """Create GFF database (lazy-loaded, cached)"""
-    #     if self._gff_db is None:
-    #         unique_id = str(uuid.uuid4())[:8]
-
-    #         if self.gff_cache_dir:
-    #             os.makedirs(self.gff_cache_dir, exist_ok=True)
-    #             db_path = os.path.join(
-    #                 str(self.gff_cache_dir),
-    #                 f"{os.path.basename(str(self.context.gff_file))}_{unique_id}.db"
-    #             )
-    #         else:
-    #             db_path = os.path.join(
-    #                 tempfile.gettempdir(),
-    #                 f"gff_temp_{unique_id}.db"
-    #             )
-
-    #         try:
-    #             # disk-based database first
-    #             self._gff_db = gffutils.create_db(
-    #                 str(self.context.gff_file),
-    #                 dbfn=db_path,
-    #                 force=True,
-    #                 merge_strategy='create_unique',
-    #                 id_spec=['ID', 'Name', 'gbkey', 'gene', 'gene_biotype', 'locus_tag', 'old_locus_tag']
-    #             )
-    #             self._gff_db_path = db_path
-    #             # self._temp_files.append(db_path)
-
-    #         except Exception as e:
-    #             self.console.print(
-    #                 f"[bold red]Error:[/] Failed to create GFF database: {str(e)}"
-    #             )
-    #             self.console.print("[yellow]Using in-memory database[/]")
-
-    #             # fallback to in-memory
-    #             self._gff_db = gffutils.create_db(
-    #                 str(self.context.gff_file),
-    #                 dbfn=":memory:",
-    #                 force=True,
-    #                 merge_strategy='create_unique',
-    #                 id_spec=['ID', 'Name', 'gbkey', 'gene', 'gene_biotype', 'locus_tag', 'old_locus_tag']
-    #             )
-    #             self._gff_db_path = ":memory:"
-
-    #     return self._gff_db
-
     @property
     def gff_db(self) -> gffutils.FeatureDB:
         """Create GFF database (lazy-loaded, cached)"""
@@ -267,47 +215,64 @@ class GenomeResources:
                     disable_infer_transcripts=True,
                 )
                 self._gff_db_path = ":memory:"
-        
-        if self._gene_lookup_cache is None:
-            self._build_gene_lookup_cache()
-        
+
         return self._gff_db
 
-
-    def _build_gene_lookup_cache(self):
-        """Build a mapping from various gene ID formats to feature IDs"""
-        if self._gene_lookup_cache is not None:
-            return
+    def find_gene_feature(self, gene_id: str) -> Optional[gffutils.Feature]:
+        """Find gene feature with fallback substring matching.
         
-        self._gene_lookup_cache = {}
+        Fast direct DB queries without full cache building.
+        """
         db = self.gff_db
         
-        # Iterate through all features once
-        for feature in db.all_features(featuretype=['gene', 'CDS', 'mRNA']):
-            # Add direct ID
-            self._gene_lookup_cache[feature.id] = feature.id
-            
-            # Add formatted variants
-            for attr in ['ID', 'Name', 'locus_tag', 'gene', 'old_locus_tag']:
+        # direct lookup
+        try:
+            return db[gene_id]
+        except gffutils.FeatureNotFoundError:
+            pass
+        
+        # common ID variations
+        for variant in [
+            gene_id,
+            f"gene-{gene_id}",
+            f"cds-{gene_id}",
+            gene_id.replace('_', '~'),
+            gene_id.replace('~', '_'),
+        ]:
+            try:
+                return db[variant]
+            except gffutils.FeatureNotFoundError:
+                pass
+        
+        # search by attributes (slower but comprehensive)
+        for attr in ['locus_tag', 'ID', 'Name', 'gene', 'old_locus_tag']:
+            try:
+                # Query features where attribute contains gene_id
+                features = list(db.features_of_type(
+                    featuretype=['gene', 'CDS'],
+                    limit=(attr, gene_id)
+                ))
+                if features:
+                    return features[0]
+            except:
+                pass
+
+        # substring match in feature IDs (last resort)
+        for feature in db.all_features(featuretype=['gene', 'CDS']):
+            if gene_id in feature.id or feature.id in gene_id:
+                return feature
+            # Check attributes
+            for attr in ['locus_tag', 'ID', 'Name', 'gene']:
                 if attr in feature.attributes:
                     for value in feature.attributes[attr]:
-                        self._gene_lookup_cache[value] = feature.id
-                        # MAG format variants
-                        self._gene_lookup_cache[f"gene-{value}"] = feature.id
-                        self._gene_lookup_cache[value.replace('~', '_')] = feature.id
+                        if gene_id in value or value in gene_id:
+                            return feature
+        
+        return None
+
     
     def cleanup(self):
-        """Clean up temporary files and resources"""
-        # # clean up temporary GFF database files
-        # for temp_file in self._temp_files:
-        #     if os.path.exists(temp_file):
-        #         try:
-        #             os.unlink(temp_file)
-        #         except Exception as e:
-        #             self.console.print(
-        #                 f"[yellow]Warning: Could not delete temp file {temp_file}: {e}[/]"
-                    # )
-
+        """Clean up resources to enable garbage collection."""
         self._systems_df = None
         self._genes_df = None
         self._genome_idx = None
@@ -416,34 +381,21 @@ class DefenseSystem:
         Returns:
             True if boundaries found and valid, False otherwise
         """
-        db = self.resources.gff_db
-        if not hasattr(self.resources, '_gene_lookup_cache'):
-            self.resources._build_gene_lookup_cache()
-        
-        cache = self.resources._gene_lookup_cache
-        
-        # direct lookup from cache
-        start_feature_id = cache.get(self.sys_beg_hit_id)
-        if not start_feature_id:
+        start_feature = self.resources.find_gene_feature(self.sys_beg_hit_id)
+        if not start_feature:
             self._log_warning(
                 f"Start gene '{self.sys_beg_hit_id}' not found in GFF for system {self.sys_id}"
             )
             return False
         
-        end_feature_id = cache.get(self.sys_end_hit_id)
-        if not end_feature_id:
+        end_feature = self.resources.find_gene_feature(self.sys_end_hit_id)
+        if not end_feature:
             self._log_warning(
                 f"End gene '{self.sys_end_hit_id}' not found in GFF for system {self.sys_id}"
             )
             return False
         
-        try:
-            start_feature = db[start_feature_id]
-            end_feature = db[end_feature_id]
-        except KeyError as e:
-            self._log_error(f"Feature lookup failed: {e}")
-            return False
-        
+        # sequences must be on the same contig/chromosome
         if start_feature.seqid != end_feature.seqid:
             self._log_warning(
                 f"System {self.sys_id} spans multiple sequences: "
@@ -457,12 +409,11 @@ class DefenseSystem:
             )
             return False
         
-        # Set coordinates
         self.start_coord = start_feature.start
         self.end_coord = end_feature.end
         self.seq_id = start_feature.seqid
         
-        # Region size warnings
+        # region size warnings 
         region_size = self.end_coord - self.start_coord + 1
         if region_size > 1e4:
             self._log_warning(f"System {self.sys_id} region unusually large: {region_size} bp")
@@ -470,44 +421,8 @@ class DefenseSystem:
             self._log_warning(f"System {self.sys_id} region unusually small: {region_size} bp")
         
         return True
-        
-        # start_gene_start_coord, start_gene_end_coord, start_gene_seq_id = start_gene_result
-        # end_gene_start_coord, end_gene_end_coord, end_gene_seq_id = end_gene_result
-
-        # # genes must be on same sequence
-        # if start_gene_seq_id != end_gene_seq_id:
-        #     self._log_warning(
-        #         f"System {self.sys_id} spans multiple sequences: "
-        #         f"{start_gene_seq_id} and {end_gene_seq_id}"
-        #     )
-        #     return False
-
-        # # sequence must exist in genome
-        # if start_gene_seq_id not in self.resources.genome_idx:
-        #     self._log_error(
-        #         f"Sequence {start_gene_seq_id} not found in genome for system {self.sys_id}"
-        #     )
-        #     return False
-        
-        # self.start_coord = start_gene_start_coord
-        # self.end_coord = end_gene_end_coord  
-        # self.seq_id = start_gene_seq_id
-
-        # # region size warnings 
-        # region_size = self.end_coord - self.start_coord + 1
-        
-        # if region_size > 1e4:
-        #     self._log_warning(
-        #         f"System {self.sys_id} region unusually large: {region_size} bp"
-        #     )
-        # if region_size < 1e2:
-        #     self._log_warning(
-        #         f"System {self.sys_id} region unusually small: {region_size} bp"
-        #     )
-        
-        # return True
     
-
+    
     def extract_genomic_sequence(
         self,
         output_file: TextIO
