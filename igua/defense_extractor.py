@@ -1,6 +1,7 @@
 from abc import ABC, abstractmethod
 import gc
 import os
+import re
 import tempfile
 import time
 import uuid
@@ -314,6 +315,40 @@ class GenomeResources:
         self._gff_db = None
 
 
+
+    def _get_seq_by_attribute(self, attr_name, attr_value):
+        """Get sequence by attribute specified in brackets."""
+        for record_id in self._protein_idx.keys():
+            # get full header line 
+            header = self._protein_idx[record_id].long_name  
+            match = re.search(rf'\[{attr_name}=({attr_value})\]', header)
+            if match:
+                return self._protein_idx[record_id]
+        return None
+
+
+
+    def get_protein_sequence(self, hit_id: str) -> Optional[str]:
+        """Get protein sequence with fallback substring matching.
+        """
+        if self._protein_idx is None:
+            self._protein_idx = self.protein_idx
+
+        # try direct lookup first
+        try:
+            return str(self._protein_idx[hit_id])
+        except KeyError:
+            pass
+        
+        # substring search through attributes in header
+        search_attributes= ['locus_tag', 'ID', 'Name', 'gene']
+        for attr in search_attributes:
+            seq = self._get_seq_by_attribute(attr, hit_id)
+            if seq:
+                return str(seq)
+
+        return None
+
 class DefenseSystem:
     """Represents a single defense system with extraction logic."""
     
@@ -529,32 +564,23 @@ class DefenseSystem:
         protein_sizes = {}
         
         for hit_id in self.sys_genes_hit_ids:
-            try:
-                sequence = self.resources.protein_idx[hit_id]
-                sequence_str = str(sequence)
-                sequence_length = len(sequence_str)
-                
-                # composite protein ID: system_id__gene_id
-                # because using "_" as in original IGUA would break downstream processing,
-                # since system IDs and gene IDs are separated by "_"
-                protein_id = f"{self.sys_id}__{hit_id}"
-                
-                self._write_fasta(output_file, protein_id, sequence_str)
-                
-                protein_sizes[protein_id] = sequence_length
-                
-            except KeyError:
+            sequence_str = self.resources.get_protein_sequence(hit_id)
+            
+            if sequence_str is None:
                 self._log_warning(
                     f"Protein {hit_id} not found in FASTA for system {self.sys_id}"
                 )
-            except Exception as e:
-                self._log_error(
-                    f"Error extracting protein {hit_id} for system {self.sys_id}: {e}"
-                )
+                continue
+            # composite protein ID: system_id__gene_id
+            # because using "_" as in original IGUA would break downstream processing,
+            # since system IDs and gene IDs are separated by "_"
+            protein_id = f"{self.sys_id}__{hit_id}"
+            self._write_fasta(output_file, protein_id, sequence_str)
+            protein_sizes[protein_id] = len(sequence_str)
         
         return protein_sizes
-    
-    
+
+
     def _write_fasta(self, file: TextIO, name: str, sequence: str):
         """Write a FASTA record to file"""
         file.write(">{}\n".format(name))
