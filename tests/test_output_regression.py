@@ -4,7 +4,7 @@ from pathlib import Path
 import pytest
 
 
-test_cases = ["secretion_small", "ecoli", "emerge"]
+test_cases = ["ecoli", "secretion_small", "emerge"]
 
 @pytest.mark.parametrize("ref_data_id", test_cases)
 def test_gcfs_output_structure(ref_data_id):
