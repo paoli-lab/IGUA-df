@@ -77,7 +77,7 @@ class GenomeContext:
     """Immutable data container for genome/strain file paths and metadata."""
     def __init__(
         self,
-        strain_id: Optional[str],
+        genome_id: Optional[str],
         systems_tsv: Path,
         genes_tsv: Path,
         gff_file: Path,
@@ -85,7 +85,7 @@ class GenomeContext:
         protein_fasta: Path,
         activity_filter: str = "defense",
     ):
-        self.strain_id = strain_id if strain_id else str(uuid.uuid4())[:8]
+        self.genome_id = genome_id if genome_id else str(uuid.uuid4())[:8]
         
         # file paths 
         self.systems_tsv = Path(systems_tsv)
@@ -109,7 +109,7 @@ class GenomeContext:
                 self.missing_files.append(f"{name}: {file_path}")
     
     def __repr__(self):
-        return f"GenomeContext(strain_id='{self.strain_id}', files={5 - len(self.missing_files)}/5)"
+        return f"GenomeContext(genome_id='{self.genome_id}', files={5 - len(self.missing_files)}/5)"
 
     def is_valid(self) -> bool:
         """Check if all required files exist"""
@@ -169,7 +169,7 @@ class GenomeResources:
                 # log warning about duplicates
                 self.console.print(
                     f"[bold yellow]{'Warning':>12}[/] {n_duplicates} duplicate system/s in strain "
-                    f"[bold cyan]{self.context.strain_id}[/]: "
+                    f"[bold cyan]{self.context.genome_id}[/]: "
                     f"[cyan]{', '.join(duplicate_systems[:5])}{'...' if n_duplicates > 5 else ''}[/]"
                 )
                 # keep first occurrence
@@ -480,7 +480,7 @@ class DefenseSystemExtractor:
     ) -> List[Tuple[str, int, str]]:
         """Extract genomic sequences for defense systems."""
         if not context.is_valid():
-            self.console.print(f"[bold red]Error:[/] Missing files for {context.strain_id}:")
+            self.console.print(f"[bold red]Error:[/] Missing files for {context.genome_id}:")
             for missing in context.missing_files:
                 self.console.print(f"  - {missing}")
             return []
@@ -530,12 +530,12 @@ class DefenseSystemExtractor:
             
             self.console.print(
                 f"[bold green]{'Extracted':>12}[/] {len(results)} defense systems "
-                f"for [bold cyan]{context.strain_id}[/]"
+                f"for [bold cyan]{context.genome_id}[/]"
             )
             
         except Exception as e:
             self._log_error(
-                f"Fatal error during extraction for for {context.strain_id}: {e}",
+                f"Fatal error during extraction for {context.genome_id}: {e}",
             )
             
         finally:
@@ -567,7 +567,7 @@ class DefenseSystemExtractor:
         """
         if not context.is_valid():
             self.console.print(
-                f"[bold red]Error:[/] Missing files for {context.strain_id}:"
+                f"[bold red]Error:[/] Missing files for {context.genome_id}:"
             )
             for missing in context.missing_files:
                 self.console.print(f"  - {missing}")
@@ -614,12 +614,12 @@ class DefenseSystemExtractor:
             total_proteins = len(all_proteins)
             self.console.print(
                 f"[bold green]{'Extracted':>12}[/] {total_proteins} proteins from "
-                f"{len(systems_df)} systems for [bold cyan]{context.strain_id}[/]"
+                f"{len(systems_df)} systems for [bold cyan]{context.genome_id}[/]"
             )
             
         except Exception as e:
             self._log_error(
-                f"Fatal error during extraction for for {context.strain_id}: {e}",
+                f"Fatal error during extraction for {context.genome_id}: {e}",
             )
             
         finally:

@@ -19,10 +19,6 @@
 [![Downloads](https://img.shields.io/pypi/dm/igua?style=flat-square&color=303f9f&maxAge=86400&label=downloads)](https://pepy.tech/project/igua)
 [![Preprint](https://img.shields.io/badge/preprint-bioRxiv-darkblue?style=flat-square&maxAge=2678400)](https://www.biorxiv.org/content/10.1101/2025.05.15.654203v1)
 
-## IGUA-df 
-
-Please refer to `notebooks/how-to.ipynb` for a quick overview of how to use the current, very preliminary version of IGUA-df.
-
 
 ## 🗺️ Overview
 
@@ -76,6 +72,26 @@ The GenBank locus identifier will be used as the name of each gene cluster. This
 may cause problems with gene clusters obtained with some tools, such as antiSMASH.
 If the input contains duplicate identifiers, the first gene cluster with a given 
 identifier will be used, and a warning will be displayed.
+
+### 🛡️ IGUA-df
+
+IGUA-df can be run on a single genome/strain by providing all the required files one by one. 
+
+```bash 
+$ iigua \
+$   --defense-systems-tsv /path/to/my_strain_defense_finder_systems.tsv \
+$   --defense-genes-tsv /path/to/my_strain_defense_finder_genes.tsv \
+$   --gff-file /path/to/my_strain.gff \
+$   --genome-fasta-file /path/to/my_strain.fa \
+$   --protein-fasta--file /path/to/my_strain.faa
+```
+
+The other way to run IGUA-df is by providing a single tsv file which contains the paths to the files specified above. IGUA-df is run row by row _i.e._ genome by genome. The column names must be exactly as follows: `systems_tsv`, `genes_tsv`, `gff_file`, `genome_fasta_file`, `protein_fasta_file`. An optional column `genome_id` can be provided to specify the strain name, otherwise the row index will be used (_e.g._ `genome_0000000`). 
+
+```console
+$ igua -i ../defense_finder_metadata.tsv
+```
+
 
 ### 📤 Outputs
 

@@ -235,28 +235,27 @@ class DefenseFinderDataset(BaseDataset):
 
                 chunk_data = []
                 for _, row in df_chunk.iterrows():
-                    strain_id = row.get("strain_id", None)
-                    progress.update(task, description=f"[bold blue]{'Processing':>9}[/] strain: [bold cyan]{strain_id}")
+                    genome_id = row.get("genome_id", None)
+                    progress.update(task, description=f"[bold blue]{'Processing':>9}[/] strain: [bold cyan]{genome_id}")
 
-                    # Create genome context
                     context = GenomeContext(
-                        strain_id=strain_id,
+                        genome_id=genome_id,
                         systems_tsv=pathlib.Path(row["systems_tsv"]),
                         genes_tsv=pathlib.Path(row["genes_tsv"]),
                         gff_file=pathlib.Path(row["gff_file"]),
-                        genomic_fasta=pathlib.Path(row["fasta_file"]),
-                        protein_fasta=pathlib.Path(row["faa_file"]),
+                        genomic_fasta=pathlib.Path(row["genome_fasta_file"]),
+                        protein_fasta=pathlib.Path(row["protein_fasta_file"]),
                         activity_filter=self.activity_filter,
                     )
                     
                     if not context.is_valid():
                         progress.console.print(
-                            f"[bold yellow]{'Missing':>12}[/] files for {strain_id}: {', '.join(context.missing_files)}"
+                            f"[bold yellow]{'Missing':>12}[/] files for {genome_id}: {', '.join(context.missing_files)}"
                         )
                         progress.update(task, advance=1)
                         continue
 
-                    # Extract systems
+                    # extract genomic sequences for defense systems
                     try:
                         systems = extractor.extract_systems(
                             context=context,
@@ -265,7 +264,7 @@ class DefenseFinderDataset(BaseDataset):
                         chunk_data.extend(systems)
                         del systems
                     except Exception as e:
-                        progress.console.print(f"[bold red]{'Error':>12}[/] processing {strain_id}: {e}")
+                        progress.console.print(f"[bold red]{'Error':>12}[/] processing {genome_id}: {e}")
 
                     progress.update(task, advance=1)
                 
@@ -324,29 +323,29 @@ class DefenseFinderDataset(BaseDataset):
         with open(output, "w") as dst:
             task = progress.add_task(f"[bold blue]{'Processing':>9}[/] protein sequences", total=len(df))
 
-            for _, row in df.iterrows():
-                strain_id = row.get("strain_id", None)
-                progress.update(task, description=f"[bold blue]{'Processing':>9}[/] strain: [bold cyan]{strain_id}")
+            for n, row in df.iterrows():
+                genome_id = row.get("genome_id", None)
+                if genome_id is None:
+                    genome_id = f"genome_{n:07}"
+                progress.update(task, description=f"[bold blue]{'Processing':>9}[/] strain: [bold cyan]{genome_id}")
 
-                # Create genome context
                 context = GenomeContext(
-                    strain_id=strain_id,
+                    genome_id=genome_id,
                     systems_tsv=pathlib.Path(row["systems_tsv"]),
                     genes_tsv=pathlib.Path(row["genes_tsv"]),
                     gff_file=pathlib.Path(row["gff_file"]),
-                    genomic_fasta=pathlib.Path(row["fasta_file"]),
-                    protein_fasta=pathlib.Path(row["faa_file"]),
+                    genomic_fasta=pathlib.Path(row["genome_fasta_file"]),
+                    protein_fasta=pathlib.Path(row["protein_fasta_file"]),
                     activity_filter=self.activity_filter,
                 )
                 
                 if not context.is_valid():
                     progress.console.print(
-                        f"[bold yellow]{'Missing':>12}[/] files for {strain_id}: {', '.join(context.missing_files)}"
+                        f"[bold yellow]{'Missing':>12}[/] files for {genome_id}: {', '.join(context.missing_files)}"
                     )
                     progress.update(task, advance=1)
                     continue
-
-                # Extract protein sequences
+                # extract protein sequences for representative defense systems
                 try:
                     proteins = extractor.extract_proteins(
                         context=context,
@@ -355,7 +354,7 @@ class DefenseFinderDataset(BaseDataset):
                     )
                     protein_sizes.update(proteins)
                 except Exception as e:
-                    progress.console.print(f"[bold red]{'Error':>12}[/] processing {strain_id}: {e}")
+                    progress.console.print(f"[bold red]{'Error':>12}[/] processing {genome_id}: {e}")
 
                 progress.update(task, advance=1)
 
