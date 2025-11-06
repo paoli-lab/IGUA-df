@@ -208,28 +208,18 @@ def build_parser() -> argparse.ArgumentParser:
         type=pathlib.Path,
     )
     group_defense.add_argument(
-        "--gff",
+        "--gff-file",
         help="Path to GFF annotation file",
         type=pathlib.Path,
     )
     group_defense.add_argument(
-        "--genome",
+        "--genome-fasta-file",
         help="Path to genome FASTA file",
         type=pathlib.Path,
     )
     group_defense.add_argument(
-        "--protein-file",
+        "--protein-fasta-file",
         help="Path to protein FASTA file (.faa) - REQUIRED for individual file mode",
-        type=pathlib.Path,
-    )
-    group_defense.add_argument(
-        "--gene-file",
-        help="Path to gene nucleotide FASTA file (.fna) - optional",
-        type=pathlib.Path,
-    )
-    group_defense.add_argument(
-        "--write-defense-systems",
-        help="Write extracted defense systems to this directory",
         type=pathlib.Path,
     )
     group_defense.add_argument(
@@ -244,7 +234,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     group_defense.add_argument(
         "--defense-finder-verbose",
-        help="Detailed output for extracted defense systems, proteins, and nucleotides",
+        help="Detailed output for extracted defense systems genomic and protein sequences.",
         action="store_true",
         default=False
     )
@@ -263,14 +253,13 @@ def create_dataset(
             with open(input_file, "r") as f:
                 header = f.readline().strip().split("\t")
                 
-                metadata_cols = ["systems_tsv", "genes_tsv", "gff_file", "fasta_file"]
+                metadata_cols = ["systems_tsv", "genes_tsv", "gff_file", "genome_fasta_file", "protein_fasta_file"]
                 
                 if all(col in header for col in metadata_cols):
                     progress.console.print(f"[bold blue]{'Detected':>12}[/] DefenseFinder metadata TSV format")
                     dataset = DefenseFinderDataset()
                     dataset.defense_metadata = input_file
-                    dataset.write_output = getattr(args, 'write_defense_systems', None) is not None
-                    dataset.output_dir = getattr(args, 'write_defense_systems', args.output.parent)
+                    dataset.output_dir = getattr(args.output, "parent")
                     dataset.verbose = getattr(args, 'defense_finder_verbose', False)
                     dataset.activity_filter = getattr(args, 'activity', 'defense') 
                     return dataset
@@ -407,9 +396,9 @@ def main(argv: typing.Optional[typing.List[str]] = None) -> int:
     individual_args = [
         args.defense_systems_tsv, 
         args.defense_genes_tsv, 
-        args.gff, 
-        args.genome,
-        args.protein_file,
+        args.gff_file, 
+        args.genome_fasta_file,
+        args.protein_fasta_file,
     ]
     
     # for Defense finder 
@@ -427,12 +416,12 @@ def main(argv: typing.Optional[typing.List[str]] = None) -> int:
         if not args.input:
             # create a single-row pd.df with the individual files
             input_dict_df = {
-                "strain_id": [os.path.basename(args.genome).split('.')[0]],
+                "genome_id": [os.path.basename(args.genome).split('.')[0]],
                 "systems_tsv": [str(args.defense_systems_tsv)],
                 "genes_tsv": [str(args.defense_genes_tsv)],
                 "gff_file": [str(args.gff)],
-                "fasta_file": [str(args.genome)],
-                "faa_file": [str(args.protein_file)]
+                "genome_fasta_file": [str(args.genome)],
+                "protein_fasta_file": [str(args.protein_file)]
             }
             
             # optional genes fna file 
@@ -564,7 +553,7 @@ def main(argv: typing.Optional[typing.List[str]] = None) -> int:
                 if is_defense_finder and hasattr(dataset, 'defense_metadata') and dataset.defense_metadata:
                     # double underscore for DefenseFinder 
                     prot_clusters["cluster_id"] = (
-                            prot_clusters["protein_id"].str.rsplit("@@", n=1).str[0]
+                            prot_clusters["protein_id"].str.rsplit("__", n=1).str[0]
                         )
                 else:
                     # traditional format: use single underscore delimiter
