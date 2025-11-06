@@ -13,8 +13,8 @@ def test_regression_gcfs(ref_data_id):
     # igua -i ../secretion_systems_metadata_short.tsv --output gcfs.tsv --compositions compositions.npz --features features.fa
     # igua -i ../strains_metadata.tsv --output gcfs.tsv --compositions compositions.npz --features features.fa
     # igua -i ../emerge_sample_15_metadata.tsv --output gcfs.tsv --compositions compositions.npz --features features.fa
-    gcfs = pd.read_csv(f"tests/data/{ref_data_id}_gcfs.tsv", sep="\t")
-    current_gcfs = pd.read_csv(f"test_output/{ref_data_id}_gcfs.tsv", sep="\t")
+    gcfs = pd.read_csv(f"tests/fixtures/{ref_data_id}_gcfs.tsv", sep="\t")
+    current_gcfs = pd.read_csv(f"tests/test_output/{ref_data_id}_gcfs.tsv", sep="\t")
 
     # same shape and number of unique GCFs
     assert len(gcfs) == len(current_gcfs)
@@ -36,8 +36,8 @@ def test_regression_gcfs(ref_data_id):
 @pytest.mark.parametrize("ref_data_id", test_cases)
 def test_regression_compositions(ref_data_id):
     """Test compositions output structure"""
-    comp = anndata.read_h5ad(f"tests/data/{ref_data_id}_compositions.h5ad")
-    current_comp = anndata.read_h5ad(f"test_output/{ref_data_id}_compositions.h5ad")
+    comp = anndata.read_h5ad(f"tests/fixtures/{ref_data_id}_compositions.h5ad")
+    current_comp = anndata.read_h5ad(f"tests/test_output/{ref_data_id}_compositions.h5ad")
 
     assert comp.shape == current_comp.shape
     assert all(comp.var_names == current_comp.var_names)

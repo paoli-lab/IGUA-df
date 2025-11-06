@@ -9,7 +9,7 @@ test_cases = ["ecoli", "secretion_small", "emerge"]
 @pytest.mark.parametrize("ref_data_id", test_cases)
 def test_gcfs_output_structure(ref_data_id):
     """Test gcfs output maintains expected structure"""
-    gcfs = pd.read_csv(f"test_output/{ref_data_id}_gcfs.tsv", sep="\t")
+    gcfs = pd.read_csv(f"tests/test_output/{ref_data_id}_gcfs.tsv", sep="\t")
 
     # file structure tests
     assert set(gcfs.columns) == {
@@ -29,7 +29,7 @@ def test_gcfs_output_structure(ref_data_id):
 @pytest.mark.parametrize("ref_data_id", test_cases)
 def test_compositions_output(ref_data_id):
     """Test compositions output structure"""
-    comp = anndata.read_h5ad(f"test_output/{ref_data_id}_compositions.h5ad")
+    comp = anndata.read_h5ad(f"tests/test_output/{ref_data_id}_compositions.h5ad")
 
     assert comp.X.shape[0] > 0  # type: ignore # has gcfs
     assert comp.X.shape[1] > 0  # type: ignore # has features
@@ -40,7 +40,7 @@ def test_compositions_output(ref_data_id):
 @pytest.mark.parametrize("ref_data_id", test_cases)
 def test_features_output(ref_data_id):
     """Test protein features FASTA"""
-    features_path = Path(f"test_output/{ref_data_id}_features.fa")
+    features_path = Path(f"tests/test_output/{ref_data_id}_features.fa")
     assert features_path.exists()
     assert features_path.stat().st_size > 0
 
