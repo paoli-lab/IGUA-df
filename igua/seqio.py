@@ -205,7 +205,7 @@ class DefenseFinderDataset(BaseDataset):
         
         extractor = DefenseSystemExtractor(progress=progress, verbose=self.verbose)
         
-        progress.console.print(f"[bold blue]{'Using':>12}[/] defense metadata file: {self.defense_metadata}")
+        progress.console.print(f"[bold blue]{'Using':>12}[/] defense metadata file: [magenta]{self.defense_metadata}[/]")
         
         try:
             df = pandas.read_csv(self.defense_metadata, sep="\t")
@@ -261,7 +261,6 @@ class DefenseFinderDataset(BaseDataset):
                         systems = extractor.extract_systems(
                             context=context,
                             output_file=dst,
-                            gff_cache_dir=self.gff_cache_dir
                         )
                         chunk_data.extend(systems)
                         del systems
@@ -300,9 +299,9 @@ class DefenseFinderDataset(BaseDataset):
         """Extracts protein sequences from defense systems."""
         
         extractor = DefenseSystemExtractor(progress=progress, verbose=self.verbose)
-        
-        progress.console.print(f"[bold blue]{'Using':>12}[/] defense metadata file: {self.defense_metadata}")
-        
+
+        progress.console.print(f"[bold blue]{'Using':>12}[/] defense metadata file: [magenta]{self.defense_metadata}[/]")
+
         try:
             df = pandas.read_csv(self.defense_metadata, sep="\t")
             return self._extract_proteins_from_tsv(progress, df, output, representatives, extractor)

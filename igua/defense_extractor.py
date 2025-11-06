@@ -1,21 +1,77 @@
-from abc import ABC, abstractmethod
 import gc
-import os
 import re
-import tempfile
-import time
 import uuid
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional, TextIO, Tuple
-import gffutils
 import pandas as pd
 import rich.progress
 from pyfaidx import Fasta
 from rich.console import Console
 
 
-# [ ] cleanup and logging needs tidying up
-# [ ] clean up hit_ids from systems tsv vs get_system_genes from genes tsv
+
+class GFFIndex:
+    """Fast, in-memory GFF index."""
+    def __init__(self, gff_path: Path):
+        self.path = gff_path
+        self._index: Dict[str, Dict] = {}
+        self._build_index()
+    
+    def _build_index(self):
+        """Build comprehensive ID index (runs once)."""
+        with open(self.path, 'r') as f:
+            for line in f:
+                if line.startswith('#'):
+                    continue
+                
+                parts = line.strip().split('\t')
+                if len(parts) < 9:
+                    continue
+                
+                seqid, source, ftype, start, end, score, strand, phase, attrs = parts
+                
+                if ftype not in ['gene', 'CDS']:
+                    continue
+                
+                # parse attributes
+                attr_dict = dict(item.split('=', 1) for item in attrs.split(';') if '=' in item)
+                
+                feature = {
+                    'seqid': seqid,
+                    'type': ftype,
+                    'start': int(start),
+                    'end': int(end),
+                    'strand': strand,
+                    'attributes': attr_dict
+                }
+                
+                # index by multiple possible keys
+                for key in ['ID', 'locus_tag', 'Name', 'gene', 'old_locus_tag', 'protein_id']:
+                    val = attr_dict.get(key)
+                    if val:
+                        self._index[val] = feature
+                        # add common variations
+                        self._index[f"gene-{val}"] = feature
+                        self._index[f"cds-{val}"] = feature
+                        self._index[val.replace('_', '~')] = feature
+                        self._index[val.replace('~', '_')] = feature
+    
+    def get(self, gene_id: str) -> Optional[Dict]:
+        """O(1) lookup."""
+        return self._index.get(gene_id)
+    
+    def __getitem__(self, gene_id: str) -> Dict:
+        """Dict-like access."""
+        feature = self._index.get(gene_id)
+        if feature is None:
+            raise KeyError(f"Gene ID '{gene_id}' not found")
+        return feature
+    
+    def __contains__(self, gene_id: str) -> bool:
+        """Check if gene exists."""
+        return gene_id in self._index
+
+
 
 class GenomeContext:
     """Immutable data container for genome/strain file paths and metadata."""
@@ -70,18 +126,15 @@ class GenomeResources:
         self, 
         context: GenomeContext, 
         console: Console,
-        gff_cache_dir: Optional[Path] = None
     ):
         self.context = context
         self.console = console
-        self.gff_cache_dir = gff_cache_dir
 
         self._systems_df: Optional[pd.DataFrame] = None
         self._genes_df: Optional[pd.DataFrame] = None
         self._genome_idx: Optional[Fasta] = None
         self._protein_idx: Optional[Fasta] = None
-        self._gff_db: Optional[gffutils.FeatureDB] = None
-        self._gff_db_path: Optional[str] = None
+        self._gff_db: Optional[GFFIndex] = None
 
 
     @property
@@ -164,113 +217,17 @@ class GenomeResources:
         return self._protein_idx
 
     @property
-    def gff_db(self) -> gffutils.FeatureDB:
-        """Create GFF database (lazy-loaded, cached)"""
+    def gff_db(self) -> GFFIndex:
+        """Load GFF index (lazy-loaded, cached)"""
         if self._gff_db is None:
-            unique_id = str(uuid.uuid4())[:8]
-            
-            if self.gff_cache_dir:
-                os.makedirs(self.gff_cache_dir, exist_ok=True)
-                db_path = os.path.join(
-                    str(self.gff_cache_dir),
-                    f"{self.context.gff_file.stem}_{unique_id}.db"
-                )
-            else:
-                db_path = os.path.join(
-                    tempfile.gettempdir(),
-                    f"gff_temp_{unique_id}.db"
-                )
-            
-            try:
-                self._gff_db = gffutils.create_db(
-                    str(self.context.gff_file),
-                    dbfn=db_path,
-                    force=True,
-                    merge_strategy='create_unique',
-                    id_spec={
-                        'gene': ['ID', 'gene_id', 'locus_tag', 'Name'],
-                        'CDS': ['ID', 'protein_id', 'locus_tag', 'Name'],
-                        'mRNA': ['ID', 'transcript_id', 'locus_tag', 'Name']
-                    },
-                    disable_infer_genes=True,
-                    disable_infer_transcripts=True,
-                )
-                self._gff_db_path = db_path
-                
-            except Exception as e:
-                self.console.print(f"[bold red]Error:[/] Failed to create GFF database: {e}")
-                self.console.print("[yellow]Using in-memory database[/]")
-                
-                self._gff_db = gffutils.create_db(
-                    str(self.context.gff_file),
-                    dbfn=":memory:",
-                    force=True,
-                    merge_strategy='create_unique',
-                    id_spec={
-                        'gene': ['ID', 'gene_id', 'locus_tag', 'Name'],
-                        'CDS': ['ID', 'protein_id', 'locus_tag', 'Name'],
-                        'mRNA': ['ID', 'transcript_id', 'locus_tag', 'Name']
-                    },
-                    disable_infer_genes=True,
-                    disable_infer_transcripts=True,
-                )
-                self._gff_db_path = ":memory:"
-
+            self._gff_db = GFFIndex(self.context.gff_file)
         return self._gff_db
-
-    def find_gene_feature(self, gene_id: str) -> Optional[gffutils.Feature]:
-        """Find gene feature with fallback substring matching.
-        
-        Fast direct DB queries without full cache building.
-        """
-        db = self.gff_db
-        
-        # direct lookup
-        try:
-            return db[gene_id]
-        except gffutils.FeatureNotFoundError:
-            pass
-        
-        # common ID variations
-        for variant in [
-            gene_id,
-            f"gene-{gene_id}",
-            f"cds-{gene_id}",
-            gene_id.replace('_', '~'),
-            gene_id.replace('~', '_'),
-        ]:
-            try:
-                return db[variant]
-            except gffutils.FeatureNotFoundError:
-                pass
-        
-        # search by attributes (slower but comprehensive)
-        for attr in ['locus_tag', 'ID', 'Name', 'gene', 'old_locus_tag']:
-            try:
-                # Query features where attribute contains gene_id
-                features = list(db.features_of_type(
-                    featuretype=['gene', 'CDS'],
-                    limit=(attr, gene_id)
-                ))
-                if features:
-                    return features[0]
-            except:
-                pass
-
-        # substring match in feature IDs (last resort)
-        for feature in db.all_features(featuretype=['gene', 'CDS']):
-            if gene_id in feature.id or feature.id in gene_id:
-                return feature
-            # Check attributes
-            for attr in ['locus_tag', 'ID', 'Name', 'gene']:
-                if attr in feature.attributes:
-                    for value in feature.attributes[attr]:
-                        if gene_id in value or value in gene_id:
-                            return feature
-        
-        return None
-
     
+    def find_gene_feature(self, gene_id: str) -> Optional[Dict]:
+        """O(1) lookup with built-in fallbacks."""
+        return self.gff_db.get(gene_id)
+
+
     def cleanup(self):
         """Clean up resources to enable garbage collection."""
         self._systems_df = None
@@ -328,26 +285,19 @@ class DefenseSystem:
         self.sys_id: str = system_row['sys_id']
         self.sys_beg_hit_id: str = system_row['sys_beg']
         self.sys_end_hit_id: str = system_row['sys_end']
-        # self.protein_hit_ids: list = system_row['protein_in_syst'].split(",")
-        # self.genes_count: int = system_row['genes_count']
 
         self._system_row = system_row
         self._sys_genes_df: Optional[pd.DataFrame] = None
         self._sys_genes_hit_ids: Optional[List[str]] = None
 
-        
         self.resources = resources
         self.console = console
         self.verbose = verbose
-        
 
         # genomic coordinates 
         self.start_coord: Optional[int] = None
         self.end_coord: Optional[int] = None
         self.seq_id: Optional[str] = None
-        
-        # assert len(self.protein_hit_ids) == self.genes_count, \
-        #     f"Protein count mismatch for {self.sys_id}"
     
     @property
     def sys_genes_df(self) -> pd.DataFrame:
@@ -363,66 +313,63 @@ class DefenseSystem:
         """Lazy load gene hit IDs from sys_genes_df"""
         if self._sys_genes_hit_ids is None:
             self._sys_genes_hit_ids = self.sys_genes_df['hit_id'].tolist()
+            # sys genes also specified in the system row as comma-separated string
+            # sanity check if systems tsv and genes tsv are consistent
+            try: 
+                protein_hit_ids = self._system_row['protein_in_syst'].split(",")
+                genes_count = self._system_row['genes_count']
+                assert len(protein_hit_ids) == genes_count, \
+                    f"Protein count mismatch for [bold cyan]{self.sys_id}[/]"
+            except (KeyError, AssertionError) as e:
+                self._log_warning(
+                    f"failed to retrieve protein hit IDs or gene count from systems_tsv for [bold cyan]{self.sys_id}[/]: {e}"
+                )
+                pass
         return self._sys_genes_hit_ids
-    
-    # @property
-    # def protein_hit_ids(self) -> List[str]:
-    #     """Get protein hit IDs from system row"""
-    #     return self._system_row['protein_in_syst'].split(",")
-    
-    @property
-    def genes_count(self) -> int:
-        """Get gene count from system row"""
-        return self._system_row['genes_count']
 
     def find_boundaries(self) -> bool:
-        """Find and validate genomic boundaries using flexible lookup strategies.
-        
-        Returns:
-            True if boundaries found and valid, False otherwise
-        """
+        """Find and validate genomic boundaries using flexible lookup strategies."""
         start_feature = self.resources.find_gene_feature(self.sys_beg_hit_id)
         if not start_feature:
             self._log_warning(
-                f"Start gene '{self.sys_beg_hit_id}' not found in GFF for system {self.sys_id}"
+                f"Start gene '{self.sys_beg_hit_id}' not found in GFF for system [bold cyan]{self.sys_id}[/]"
             )
             return False
         
         end_feature = self.resources.find_gene_feature(self.sys_end_hit_id)
         if not end_feature:
             self._log_warning(
-                f"End gene '{self.sys_end_hit_id}' not found in GFF for system {self.sys_id}"
+                f"End gene '{self.sys_end_hit_id}' not found in GFF for system [bold cyan]{self.sys_id}[/]"
             )
             return False
         
         # sequences must be on the same contig/chromosome
-        if start_feature.seqid != end_feature.seqid:
+        if start_feature['seqid'] != end_feature['seqid']:
             self._log_warning(
-                f"System {self.sys_id} spans multiple sequences: "
-                f"{start_feature.seqid} and {end_feature.seqid}"
+                f"System [bold cyan]{self.sys_id}[/] spans multiple sequences"
             )
             return False
         
-        if start_feature.seqid not in self.resources.genome_idx:
+        # sequence must exist in genome index
+        if start_feature['seqid'] not in self.resources.genome_idx:
             self._log_error(
-                f"Sequence {start_feature.seqid} not found in genome for system {self.sys_id}"
+                f"Sequence {start_feature['seqid']} not found in genome"
             )
             return False
         
-        self.start_coord = start_feature.start
-        self.end_coord = end_feature.end
-        self.seq_id = start_feature.seqid
+        self.start_coord = start_feature['start']
+        self.end_coord = end_feature['end']
+        self.seq_id = start_feature['seqid']
         
         # region size warnings 
         region_size = self.end_coord - self.start_coord + 1
         if region_size > 1e4:
-            self._log_warning(f"System {self.sys_id} region unusually large: {region_size} bp")
+            self._log_warning(f"System [bold cyan]{self.sys_id}[/] region unusually large: {region_size} bp")
         if region_size < 1e2:
-            self._log_warning(f"System {self.sys_id} region unusually small: {region_size} bp")
-        
+            self._log_warning(f"System [bold cyan]{self.sys_id}[/] region unusually small: {region_size} bp")
+
         return True
-    
-    
+        
     def extract_genomic_sequence(
         self,
         output_file: TextIO
@@ -436,7 +383,7 @@ class DefenseSystem:
             Tuple of (sys_id, sequence_length, source_file) or None on error
         """
         if not all([self.start_coord, self.end_coord, self.seq_id]):
-            self._log_error(f"Cannot extract sequence: boundaries not set for {self.sys_id}")
+            self._log_error(f"Cannot extract sequence: boundaries not set for [bold cyan]{self.sys_id}[/]")
             return None
         
         try:
@@ -450,17 +397,17 @@ class DefenseSystem:
             if self.verbose:
                 self.console.print(
                     f"[bold blue]{'Extracted':>22}[/] genomic sequence for "
-                    f"[cyan]{self.sys_id}[/] ({sequence_length} bp)"
+                    f"[bold cyan]{self.sys_id}[/] ({sequence_length} bp)"
                 )
             
             return (
-                self.sys_id,  # cluster_id
-                sequence_length,  # cluster_length
-                str(self.resources.context.genomic_fasta)  # filename
+                self.sys_id,                                # cluster_id
+                sequence_length,                            # cluster_length
+                str(self.resources.context.genomic_fasta)   # filename
             )
             
         except Exception as e:
-            self._log_error(f"Failed to extract sequence for {self.sys_id}: {e}")
+            self._log_error(f"Failed to extract sequence for [bold cyan]{self.sys_id}[/]: {e}")
             return None
     
 
@@ -483,7 +430,7 @@ class DefenseSystem:
             
             if sequence_str is None:
                 self._log_warning(
-                    f"Protein {hit_id} not found in FASTA for system {self.sys_id}"
+                    f"Protein {hit_id} not found in FASTA for system [bold cyan]{self.sys_id}[/]"
                 )
                 continue
             # composite protein ID: system_id__gene_id
@@ -529,7 +476,6 @@ class DefenseSystemExtractor:
         self,
         context: GenomeContext,
         output_file: TextIO,
-        gff_cache_dir: Optional[Path] = None,
         representatives: Optional[Iterable[str]] = None
     ) -> List[Tuple[str, int, str]]:
         """Extract genomic sequences for defense systems."""
@@ -539,8 +485,8 @@ class DefenseSystemExtractor:
                 self.console.print(f"  - {missing}")
             return []
         
-        # initialize resources 
-        resources = GenomeResources(context, self.console, gff_cache_dir)
+        # initialize resources
+        resources = GenomeResources(context, self.console)
         using_external_progress = self.progress is not None
         
         if not using_external_progress:
@@ -589,9 +535,7 @@ class DefenseSystemExtractor:
             
         except Exception as e:
             self._log_error(
-                "EXTRACTION_FATAL_ERROR",
-                f"Uncaught exception in extraction process: {e}",
-                strain_id=context.strain_id
+                f"Fatal error during extraction for for {context.strain_id}: {e}",
             )
             
         finally:
@@ -630,7 +574,7 @@ class DefenseSystemExtractor:
             return {}
         
         # initialize resources 
-        resources = GenomeResources(context, self.console, gff_cache_dir=None)
+        resources = GenomeResources(context, self.console)
         
         using_external_progress = self.progress is not None
         if not using_external_progress:
@@ -675,9 +619,7 @@ class DefenseSystemExtractor:
             
         except Exception as e:
             self._log_error(
-                "PROTEIN_EXTRACTION_ERROR",
-                f"Failed to extract protein sequences: {e}",
-                strain_id=context.strain_id
+                f"Fatal error during extraction for for {context.strain_id}: {e}",
             )
             
         finally:
@@ -691,38 +633,6 @@ class DefenseSystemExtractor:
         return all_proteins
     
 
-    def _log_error(
-        self,
-        error_type: str,
-        message: str,
-        strain_id: Optional[str] = None,
-        system_id: Optional[str] = None,
-        files_dict: Optional[Dict] = None,
-        exception: Optional[Exception] = None
-    ):
-        """Log error information to file"""
-        pass
-        # log_file = "defense_extraction_errors.log"
-        
-        # timestamp = time.strftime("%Y-%m-%d %H:%M:%S")
-        # log_message = f"[{timestamp}] {error_type}: {message}\n"
-        
-        # if strain_id:
-        #     log_message += f"  Strain: {strain_id}\n"
-        # if system_id:
-        #     log_message += f"  System: {system_id}\n"
-        # if files_dict:
-        #     log_message += "  Files:\n"
-        #     for key, path in files_dict.items():
-        #         if path:
-        #             log_message += f"    {key}: {path}\n"
-        # if exception:
-        #     log_message += f"  Exception: {str(exception)}\n"
-        
-        # log_message += "-" * 80 + "\n"
-        
-        # try:
-        #     with open(log_file, "a") as f:
-        #         f.write(log_message)
-        # except Exception as e:
-        #     self.console.print(f"[red]Failed to write to log file: {e}[/]")
+    def _log_error(self, message: str):
+        """Log an error message"""
+        self.console.print(f"[bold red]{'Error':>12}[/] {message}")
