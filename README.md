@@ -46,7 +46,7 @@ to transfer annotations to the GCFs.
 
 ## 🔧 Installing
 
-### conda
+### Bioconda
 
 IGUA and all of its dependencies are available via [Bioconda](https://anaconda.org/channels/bioconda/packages/igua/overview) and can be installed using e.g., `conda` or `pixi`:
 
