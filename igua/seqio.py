@@ -14,11 +14,10 @@ import rich.progress
 
 from .mmseqs import MMSeqs
 from .mmseqs import Database
-from .defense_extractor import (
+from .cluster_extractor import (
     GenomeContext,
     GenomeResources,
-    DefenseSystem,
-    DefenseSystemExtractor
+    GeneClusterExtractor
 )
 
 
@@ -201,17 +200,17 @@ class DefenseFinderDataset(BaseDataset):
         inputs: typing.List[pathlib.Path],
         output: pathlib.Path,
     ) -> pandas.DataFrame:
-        """Extracts nucleotide sequences from defense systems."""
+        """Extracts nucleotide sequences from gene clusters."""
         
-        extractor = DefenseSystemExtractor(progress=progress, verbose=self.verbose)
+        extractor = GeneClusterExtractor(progress=progress, verbose=self.verbose)
         
-        progress.console.print(f"[bold blue]{'Using':>12}[/] defense metadata file: [magenta]{self.defense_metadata}[/]")
+        progress.console.print(f"[bold blue]{'Using':>12}[/] cluster metadata file: [magenta]{self.defense_metadata}[/]")
         
         try:
             df = pandas.read_csv(self.defense_metadata, sep="\t")
             return self._process_defense_files_from_tsv(progress, df, output, extractor)
         except Exception as e:
-            progress.console.print(f"[bold red]{'Error':>12}[/] reading defense metadata: {e}")
+            progress.console.print(f"[bold red]{'Error':>12}[/] reading cluster metadata: {e}")
             return pandas.DataFrame(columns=["cluster_id", "cluster_length", "filename"]).set_index("cluster_id")
 
     def _process_defense_files_from_tsv(
@@ -219,15 +218,15 @@ class DefenseFinderDataset(BaseDataset):
         progress: rich.progress.Progress,
         df: pandas.DataFrame,
         output: pathlib.Path,
-        extractor: DefenseSystemExtractor
+        extractor: GeneClusterExtractor
     ) -> pandas.DataFrame:
-        """Process defense systems from TSV file with file paths."""
+        """Process gene clusters from TSV file with file paths."""
         
         chunk_size = 5
         all_data = []
 
         with open(output, "w") as dst:
-            task = progress.add_task(f"[bold blue]{'Processing':>9}[/] defense systems", total=len(df))
+            task = progress.add_task(f"[bold blue]{'Processing':>9}[/] gene clusters", total=len(df))
 
             for chunk_start in range(0, len(df), chunk_size):
                 chunk_end = min(chunk_start + chunk_size, len(df))
@@ -255,7 +254,6 @@ class DefenseFinderDataset(BaseDataset):
                         progress.update(task, advance=1)
                         continue
 
-                    # extract genomic sequences for defense systems
                     try:
                         systems = extractor.extract_systems(
                             context=context,
@@ -295,17 +293,17 @@ class DefenseFinderDataset(BaseDataset):
         output: pathlib.Path,
         representatives: typing.Container[str]
     ) -> typing.Dict[str, int]:
-        """Extracts protein sequences from defense systems."""
+        """Extracts protein sequences from gene clusters."""
         
-        extractor = DefenseSystemExtractor(progress=progress, verbose=self.verbose)
+        extractor = GeneClusterExtractor(progress=progress, verbose=self.verbose)
 
-        progress.console.print(f"[bold blue]{'Using':>12}[/] defense metadata file: [magenta]{self.defense_metadata}[/]")
+        progress.console.print(f"[bold blue]{'Using':>12}[/] cluster metadata file: [magenta]{self.defense_metadata}[/]")
 
         try:
             df = pandas.read_csv(self.defense_metadata, sep="\t")
             return self._extract_proteins_from_tsv(progress, df, output, representatives, extractor)
         except Exception as e:
-            progress.console.print(f"[bold red]{'Error':>12}[/] reading defense metadata: {e}")
+            progress.console.print(f"[bold red]{'Error':>12}[/] reading cluster metadata: {e}")
             return {}
 
     def _extract_proteins_from_tsv(
@@ -314,9 +312,9 @@ class DefenseFinderDataset(BaseDataset):
         df: pandas.DataFrame,
         output: pathlib.Path,
         representatives: typing.Container[str],
-        extractor: DefenseSystemExtractor
+        extractor: GeneClusterExtractor
     ) -> typing.Dict[str, int]:
-        """Extract proteins from defense systems specified in TSV."""
+        """Extract proteins from gene clusters specified in TSV."""
         
         protein_sizes = {}
         
@@ -345,7 +343,7 @@ class DefenseFinderDataset(BaseDataset):
                     )
                     progress.update(task, advance=1)
                     continue
-                # extract protein sequences for representative defense systems
+                # extract protein sequences for representative gene clusters
                 try:
                     proteins = extractor.extract_proteins(
                         context=context,
