@@ -143,6 +143,7 @@ class GenomeResources:
         self._genome_idx: Optional[Fasta] = None
         self._protein_idx: Optional[Fasta] = None
         self._gff_db: Optional[GFFIndex] = None
+        self._coordinates_cache: Optional[List[SystemCoordinates]] = None
 
     @property
     def systems_df(self) -> pl.DataFrame:
@@ -169,7 +170,6 @@ class GenomeResources:
                     f"[bold blue]{'Processing':>12}[/] all {original_count} systems (no activity filter)"
                 )
 
-            ###### here get the names only of the duplicated systems instead of all the systems that appear 1+ times 
             n_duplicates = df.filter(pl.col("sys_id").is_duplicated()).height
             if n_duplicates > 0:
                 duplicate_systems = (
@@ -199,6 +199,9 @@ class GenomeResources:
         self._systems_df = self._systems_df.filter(
             pl.col("sys_id").is_in(representatives_list)
         )
+        
+        # Invalidate coordinates cache when filtering changes
+        self._coordinates_cache = None
 
     @property
     def genome_idx(self) -> Fasta:
@@ -221,12 +224,27 @@ class GenomeResources:
             self._gff_db = GFFIndex(self.context.gff_file)
         return self._gff_db
 
+    @property
+    def coordinates(self) -> List[SystemCoordinates]:
+        """Build and cache system coordinates (lazy-loaded, cached)"""
+        if self._coordinates_cache is None:
+            self._coordinates_cache = build_coordinates_dataframe(
+                systems_df=self.systems_df,
+                gff_index=self.gff_db,
+                genome_idx=self.genome_idx,
+                genomic_fasta_path=self.context.genomic_fasta,
+                console=self.console,
+                verbose=False
+            )
+        return self._coordinates_cache
+
     def cleanup(self):
         """Clean up resources to enable garbage collection."""
         self._systems_df = None
         self._genome_idx = None
         self._protein_idx = None
         self._gff_db = None
+        self._coordinates_cache = None
 
     def _get_seq_by_attribute(self, attr_name, attr_value):
         """Get sequence by attribute specified in brackets."""
@@ -381,7 +399,6 @@ def build_coordinates_dataframe(
             )
             continue
         
-        ####### is there a neater way to do this????? 
         start_coord = min(min(feature['start'], feature['end']) for feature in found_features.values())
         end_coord = max(max(feature['start'], feature['end']) for feature in found_features.values())
         
@@ -569,6 +586,7 @@ class GeneClusterExtractor:
         self.progress = progress
         self.console = progress.console if progress else Console()
         self.verbose = verbose
+        self._cached_resources: Optional[GenomeResources] = None
     
     def extract_systems(
         self,
@@ -576,35 +594,36 @@ class GeneClusterExtractor:
         output_file: TextIO,
         representatives: Optional[Iterable[str]] = None
     ) -> List[Tuple[str, int, str]]:
-        """Extract genomic sequences for gene clusters."""
+        """Extract genomic sequences for gene clusters.
+        
+        Args:
+            context: Genome context with file paths
+            output_file: File to write sequences to
+            representatives: Optional list of representative system IDs to filter
+        
+        Returns:
+            List of tuples (system_id, sequence_length, fasta_file_path)
+        """
         if not context.is_valid():
             self.console.print(f"[bold red]Error:[/] Missing files for {context.genome_id}:")
             for missing in context.missing_files:
                 self.console.print(f"  - {missing}")
             return []
         
-        resources = GenomeResources(context, self.console)
+        # Cache resources for potential reuse
+        self._cached_resources = GenomeResources(context, self.console)
         
         results = []
         
         try:
-            systems_df = resources.systems_df
-            
             if representatives:
-                resources.filter_systems_by_representatives(representatives)
-                systems_df = resources.systems_df
+                self._cached_resources.filter_systems_by_representatives(representatives)
             
             self.console.print(
                 f"[bold blue]{'Building':>12}[/] system coordinates"
             )
-            coordinates = build_coordinates_dataframe(
-                systems_df=systems_df,
-                gff_index=resources.gff_db,
-                genome_idx=resources.genome_idx,
-                genomic_fasta_path=context.genomic_fasta,
-                console=self.console,
-                verbose=self.verbose
-            )
+            # Use cached coordinates property
+            coordinates = self._cached_resources.coordinates
             
             valid_count = sum(1 for c in coordinates if c.valid)
             invalid_count = len(coordinates) - valid_count
@@ -619,7 +638,7 @@ class GeneClusterExtractor:
             )
             results = extract_by_contig(
                 coordinates=coordinates,
-                genome_idx=resources.genome_idx,
+                genome_idx=self._cached_resources.genome_idx,
                 output_file=output_file,
                 console=self.console,
                 verbose=self.verbose
@@ -637,11 +656,8 @@ class GeneClusterExtractor:
             )
             import traceback
             traceback.print_exc()
+            self._cleanup_cached_resources()
             
-        finally:
-            resources.cleanup()
-            gc.collect()
-        
         return results
     
     def extract_proteins(
@@ -650,37 +666,44 @@ class GeneClusterExtractor:
         output_file: TextIO,
         representatives: Optional[Iterable[str]] = None
     ) -> Dict[str, int]:
-        """Extract protein sequences for gene clusters."""
-        if not context.is_valid():
-            self.console.print(
-                f"[bold red]Error:[/] Missing files for {context.genome_id}:"
-            )
-            for missing in context.missing_files:
-                self.console.print(f"  - {missing}")
-            return {}
+        """Extract protein sequences for gene clusters.
         
-        resources = GenomeResources(context, self.console)
+        Args:
+            context: Genome context with file paths
+            output_file: File to write protein sequences to
+            representatives: Optional list of representative system IDs to filter
+        
+        Returns:
+            Dictionary of protein IDs to their sizes
+        """
+        # Try to reuse cached resources from extract_systems
+        if self._cached_resources and self._cached_resources.context.genome_id == context.genome_id:
+            resources = self._cached_resources
+            self.console.print(
+                f"[bold blue]{'Reusing':>12}[/] cached genome resources"
+            )
+        else:
+            if not context.is_valid():
+                self.console.print(
+                    f"[bold red]Error:[/] Missing files for {context.genome_id}:"
+                )
+                for missing in context.missing_files:
+                    self.console.print(f"  - {missing}")
+                return {}
+            
+            resources = GenomeResources(context, self.console)
         
         all_proteins = {}
         
         try:
-            systems_df = resources.systems_df
-            
-            if representatives:
+            if representatives and not self._cached_resources:
                 resources.filter_systems_by_representatives(representatives)
-                systems_df = resources.systems_df
             
             self.console.print(
-                f"[bold blue]{'Parsing':>12}[/] system gene lists"
+                f"[bold blue]{'Loading':>12}[/] coordinates"
             )
-            coordinates = build_coordinates_dataframe(
-                systems_df=systems_df,
-                gff_index=resources.gff_db,
-                genome_idx=resources.genome_idx,
-                genomic_fasta_path=context.genomic_fasta,
-                console=self.console,
-                verbose=self.verbose
-            )
+            # Reuse cached coordinates
+            coordinates = resources.coordinates
             
             self.console.print(
                 f"[bold blue]{'Extracting':>12}[/] protein sequences"
@@ -694,21 +717,61 @@ class GeneClusterExtractor:
             )
             
             total_proteins = len(all_proteins)
+            total_systems = sum(1 for c in coordinates if c.valid)
             self.console.print(
                 f"[bold green]{'Extracted':>12}[/] {total_proteins} proteins from "
-                f"{len(systems_df)} systems for [bold cyan]{context.genome_id}[/]"
+                f"{total_systems} systems for [bold cyan]{context.genome_id}[/]"
             )
             
         except Exception as e:
             self.console.print(
-                f"[bold red]{'Error':>12}[/] Fatal error during extraction for "
+                f"[bold red]{'Error':>12}[/] Fatal error during protein extraction for "
                 f"{context.genome_id}: {e}"
             )
             import traceback
             traceback.print_exc()
             
         finally:
-            resources.cleanup()
-            gc.collect()
+            # Cleanup after protein extraction
+            self._cleanup_cached_resources()
         
         return all_proteins
+    
+    def _cleanup_cached_resources(self):
+        """Clean up cached resources and trigger garbage collection."""
+        if self._cached_resources:
+            self._cached_resources.cleanup()
+            self._cached_resources = None
+        gc.collect()
+    
+    def extract_both(
+        self,
+        context: GenomeContext,
+        sequences_file: TextIO,
+        proteins_file: TextIO,
+        representatives: Optional[Iterable[str]] = None
+    ) -> Tuple[List[Tuple[str, int, str]], Dict[str, int]]:
+        """Extract both genomic sequences and proteins efficiently using cached coordinates.
+        
+        Args:
+            context: Genome context with file paths
+            sequences_file: File to write nucleotide sequences to
+            proteins_file: File to write protein sequences to
+            representatives: Optional list of representative system IDs to filter
+        
+        Returns:
+            Tuple of (sequence results, protein sizes dictionary)
+        """
+        seq_results = self.extract_systems(
+            context=context,
+            output_file=sequences_file,
+            representatives=representatives
+        )
+        
+        protein_sizes = self.extract_proteins(
+            context=context,
+            output_file=proteins_file,
+            representatives=representatives
+        )
+        
+        return seq_results, protein_sizes
