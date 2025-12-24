@@ -192,6 +192,124 @@ def build_parser() -> argparse.ArgumentParser:
         }
     )
 
+    group_mmseqs_dedup = parser.add_argument_group(
+        'MMSeqs2 Deduplication',
+        'Parameters for the first nucleotide clustering step (exact/near-exact deduplication).'
+    )
+    group_mmseqs_dedup.add_argument(
+        "--dedup-identity",
+        help="Sequence identity threshold for deduplication step.",
+        type=float,
+        default=0.85,
+        metavar="FLOAT",
+    )
+    group_mmseqs_dedup.add_argument(
+        "--dedup-coverage",
+        help="Coverage threshold for deduplication step.",
+        type=float,
+        default=1.0,
+        metavar="FLOAT",
+    )
+    group_mmseqs_dedup.add_argument(
+        "--dedup-evalue",
+        help="E-value threshold for deduplication step.",
+        type=float,
+        default=0.001,
+        metavar="FLOAT",
+    )
+    group_mmseqs_dedup.add_argument(
+        "--dedup-cluster-mode",
+        help="Clustering mode for deduplication: 0=SetCover, 1=Connected component, 2=Greedy incremental.",
+        type=int,
+        default=0,
+        choices=[0, 1, 2],
+        metavar="INT",
+    )
+    group_mmseqs_dedup.add_argument(
+        "--dedup-coverage-mode",
+        help="Coverage mode for deduplication: 0=target, 1=query, 2=both, 3=length of target, 4=length of query, 5=length of both.",
+        type=int,
+        default=1,
+        choices=[0, 1, 2, 3, 4, 5],
+        metavar="INT",
+    )
+
+    group_mmseqs_nuc = parser.add_argument_group(
+        'MMSeqs2 Nucleotide Clustering',
+        'Parameters for the second nucleotide clustering step (relaxed clustering of representatives).'
+    )
+    group_mmseqs_nuc.add_argument(
+        "--nuc-identity",
+        help="Sequence identity threshold for nucleotide clustering step.",
+        type=float,
+        default=0.6,
+        metavar="FLOAT",
+    )
+    group_mmseqs_nuc.add_argument(
+        "--nuc-coverage",
+        help="Coverage threshold for nucleotide clustering step.",
+        type=float,
+        default=0.5,
+        metavar="FLOAT",
+    )
+    group_mmseqs_nuc.add_argument(
+        "--nuc-evalue",
+        help="E-value threshold for nucleotide clustering step.",
+        type=float,
+        default=0.001,
+        metavar="FLOAT",
+    )
+    group_mmseqs_nuc.add_argument(
+        "--nuc-cluster-mode",
+        help="Clustering mode for nucleotide step: 0=SetCover, 1=Connected component, 2=Greedy incremental.",
+        type=int,
+        default=0,
+        choices=[0, 1, 2],
+        metavar="INT",
+    )
+    group_mmseqs_nuc.add_argument(
+        "--nuc-coverage-mode",
+        help="Coverage mode for nucleotide step: 0=target, 1=query, 2=both, 3=length of target, 4=length of query, 5=length of both.",
+        type=int,
+        default=0,
+        choices=[0, 1, 2, 3, 4, 5],
+        metavar="INT",
+    )
+
+    group_mmseqs_prot = parser.add_argument_group(
+        'MMSeqs2 Protein Clustering',
+        'Parameters for protein clustering step (used for compositional analysis).'
+    )
+    group_mmseqs_prot.add_argument(
+        "--prot-identity",
+        help="Sequence identity threshold for protein clustering step.",
+        type=float,
+        default=0.5,
+        metavar="FLOAT",
+    )
+    group_mmseqs_prot.add_argument(
+        "--prot-coverage",
+        help="Coverage threshold for protein clustering step.",
+        type=float,
+        default=0.9,
+        metavar="FLOAT",
+    )
+    group_mmseqs_prot.add_argument(
+        "--prot-evalue",
+        help="E-value threshold for protein clustering step.",
+        type=float,
+        default=0.001,
+        metavar="FLOAT",
+    )
+    group_mmseqs_prot.add_argument(
+        "--prot-coverage-mode",
+        help="Coverage mode for protein step: 0=target, 1=query, 2=both, 3=length of target, 4=length of query, 5=length of both.",
+        type=int,
+        default=1,
+        choices=[0, 1, 2, 3, 4, 5],
+        metavar="INT",
+    )
+
     group_defense = parser.add_argument_group(
         'DefenseFinder Mode',
         'Arguments for processing DefenseFinder outputs. Use either individual files '
@@ -300,6 +418,37 @@ def create_dataset(
     return dataset_classes.pop()()
 
 
+def get_mmseqs_params(args: argparse.Namespace) -> typing.Tuple[dict, dict, dict]:
+    """Build MMSeqs2 parameter dictionaries from command-line arguments."""
+    
+    params_nuc1 = dict(
+        e_value=args.dedup_evalue,
+        sequence_identity=args.dedup_identity,
+        coverage=args.dedup_coverage,
+        cluster_mode=args.dedup_cluster_mode,
+        coverage_mode=args.dedup_coverage_mode,
+        spaced_kmer_mode=0,
+    )
+    
+    params_nuc2 = dict(
+        e_value=args.nuc_evalue,
+        sequence_identity=args.nuc_identity,
+        coverage=args.nuc_coverage,
+        cluster_mode=args.nuc_cluster_mode,
+        coverage_mode=args.nuc_coverage_mode,
+        spaced_kmer_mode=0,
+    )
+    
+    params_prot = dict(
+        e_value=args.prot_evalue,
+        coverage=args.prot_coverage,
+        coverage_mode=args.prot_coverage_mode,
+        sequence_identity=args.prot_identity,
+    )
+    
+    return params_nuc1, params_nuc2, params_prot
+
+
 def get_protein_representative(
     mmseqs: MMSeqs,
     input_path: pathlib.Path,
@@ -385,6 +534,7 @@ def main(argv: typing.Optional[typing.List[str]] = None) -> int:
     start_time = datetime.datetime.now()
     start_time_str = start_time.strftime("%Y-%m-%d %H:%M:%S")
     
+    params_nuc1, params_nuc2, params_prot = get_mmseqs_params(args)
 
     if args.workdir is None:
         workdir = pathlib.Path(tempfile.mkdtemp())
@@ -480,7 +630,7 @@ def main(argv: typing.Optional[typing.List[str]] = None) -> int:
             f"[bold blue]{'Starting':>12}[/] nucleotide deduplication step with [purple]mmseqs[/]"
         )
         db = Database.create(mmseqs, clusters_fna)
-        step1 = db.cluster(workdir / "step1.db", **_PARAMS_NUC1)
+        step1 = db.cluster(workdir / "step1.db", **params_nuc1)
         gcfs1 = step1.to_dataframe(columns=["fragment_representative", "cluster_id"]).sort_values("cluster_id") # type: ignore
         progress.console.print(
             f"[bold green]{'Reduced':>12}[/] {len(gcfs1)} clusters to {len(gcfs1.fragment_representative.unique())} complete representatives"
@@ -491,7 +641,7 @@ def main(argv: typing.Optional[typing.List[str]] = None) -> int:
             f"[bold blue]{'Starting':>12}[/] nucleotide clustering step with [purple]MMSeqs2[/]"
         )
         repdb = step1.to_subdb(workdir / "step1.rep_seq.db")
-        step2 = repdb.cluster(workdir / "step2.db", **_PARAMS_NUC2)
+        step2 = repdb.cluster(workdir / "step2.db", **params_nuc2)
         gcfs2 = step2.to_dataframe(columns=["nucleotide_representative", "fragment_representative"]).sort_values("fragment_representative") # type: ignore
         progress.console.print(
             f"[bold green]{'Reduced':>12}[/] {len(gcfs2)} clusters to {len(gcfs2.nucleotide_representative.unique())} nucleotide representatives"
@@ -509,9 +659,6 @@ def main(argv: typing.Optional[typing.List[str]] = None) -> int:
             f"[bold green]{'Found':>12}[/] {len(representatives)} nucleotide representative clusters"
         )
 
-        # determine if this is a DefenseFinder dataset
-        is_defense_finder = isinstance(dataset, DefenseFinderDataset)
-
         if args.clustering and len(representatives) > 1:
             # extract proteins and record sizes
             proteins_faa = workdir.joinpath("proteins.faa")
@@ -519,96 +666,71 @@ def main(argv: typing.Optional[typing.List[str]] = None) -> int:
                 f"[bold blue]{'Extracting':>12}[/] protein sequences from representative clusters"
             )
             
-            # DefenseFinder datasets: handle protein extraction differently
-            if is_defense_finder:
-                try:
-                    protein_sizes = dataset.extract_proteins(
-                        progress, args.input, proteins_faa, representatives
-                    )
-                    
-                    # verify protein file was created and is not empty
-                    if not proteins_faa.exists() or proteins_faa.stat().st_size == 0:
-                        progress.console.print(f"[bold yellow]{'Warning':>12}[/] No proteins extracted from defense systems")
-                        progress.console.print(f"[bold yellow]{'Skipping':>12}[/] protein clustering due to empty protein file")
-                        args.clustering = False
+            protein_sizes = dataset.extract_proteins(
+                progress, args.input, proteins_faa, representatives
+            )
+            
+            if not proteins_faa.exists() or proteins_faa.stat().st_size == 0:
+                progress.console.print(f"[bold yellow]{'Warning':>12}[/] No proteins extracted from defense systems")
+                progress.console.print(f"[bold yellow]{'Skipping':>12}[/] protein clustering due to empty protein file")
+                args.clustering = False
                         
-                except Exception as e:
-                    progress.console.print(f"[bold red]{'Error':>12}[/] Failed to extract proteins: {e}")
-                    progress.console.print(f"[bold yellow]{'Skipping':>12}[/] protein clustering due to extraction failure")
-                    args.clustering = False
+            # cluster proteins
+            prot_db = Database.create(mmseqs, proteins_faa)
+            prot_result = prot_db.cluster(workdir / "step3.db", **params_prot)
+            prot_clusters = prot_result.to_dataframe(columns=["protein_representative", "protein_id"])
+
+            # extract protein representatives - determine cluster_id based on dataset type
+            is_defense_finder = isinstance(dataset, DefenseFinderDataset)
+            if is_defense_finder and hasattr(dataset, 'defense_metadata') and dataset.defense_metadata:
+                # double underscore for DefenseFinder 
+                prot_clusters["cluster_id"] = (
+                        prot_clusters["protein_id"].str.rsplit("__", n=1).str[0]
+                    )
             else:
-                # traditional datasets
-                protein_sizes = dataset.extract_proteins(
-                    progress, args.input, proteins_faa, representatives
+                # traditional format: use single underscore delimiter
+                prot_clusters["cluster_id"] = (
+                    prot_clusters["protein_id"].str.rsplit("_", n=1).str[0]
                 )
 
-            # proceed with protein clustering with valid file 
-            if args.clustering and proteins_faa.exists() and proteins_faa.stat().st_size > 0:
-                # cluster proteins
-                prot_db = Database.create(mmseqs, proteins_faa)
-                prot_result = prot_db.cluster(workdir / "step3.db", **_PARAMS_PROT)
-                prot_clusters = prot_result.to_dataframe(columns=["protein_representative", "protein_id"])
+            protein_representatives = {
+                x: i
+                for i, x in enumerate(
+                    sorted(prot_clusters["protein_representative"].unique())
+                )
+            }
+            progress.console.print(
+                f"[bold green]{'Found':>12}[/] {len(protein_representatives)} protein representatives for {len(prot_clusters)} proteins"
+            )
 
-                # extract protein representatives - determine cluster_id based on dataset type
-                if is_defense_finder and hasattr(dataset, 'defense_metadata') and dataset.defense_metadata:
-                    # double underscore for DefenseFinder 
-                    prot_clusters["cluster_id"] = (
-                            prot_clusters["protein_id"].str.rsplit("__", n=1).str[0]
-                        )
-                else:
-                    # traditional format: use single underscore delimiter
-                    prot_clusters["cluster_id"] = (
-                        prot_clusters["protein_id"].str.rsplit("_", n=1).str[0]
-                    )
+            # build weighted compositional array
+            progress.console.print(
+                f"[bold blue]{'Building':>12}[/] weighted compositional array"
+            )
+            compositions = make_compositions(
+                progress, prot_clusters, representatives, protein_representatives, protein_sizes
+            )
 
-                protein_representatives = {
-                    x: i
-                    for i, x in enumerate(
-                        sorted(prot_clusters["protein_representative"].unique())
-                    )
+            # compute and ponderate distances
+            progress.console.print(
+                f"[bold blue]{'Computing':>12}[/] pairwise distance based on protein composition"
+            )
+            distance_vector = compute_distances(progress, compositions.X, args.jobs, args.precision)
+
+            # run hierarchical clustering
+            progress.console.print(
+                f"[bold blue]{'Clustering':>12}[/] gene clusters using {args.clustering_method} linkage"
+            )
+            Z = linkage(distance_vector, method=args.clustering_method)
+            flat = fcluster(Z, criterion="distance", t=args.clustering_distance)
+
+            # build GCFs based on flat clustering
+            gcfs3 = pandas.DataFrame(
+                {
+                    "gcf_id": [f"{args.prefix}{i:07}" for i in flat],
+                    "nucleotide_representative": compositions.obs_names,
                 }
-                progress.console.print(
-                    f"[bold green]{'Found':>12}[/] {len(protein_representatives)} protein representatives for {len(prot_clusters)} proteins"
-                )
-
-                # build weighted compositional array
-                progress.console.print(
-                    f"[bold blue]{'Building':>12}[/] weighted compositional array"
-                )
-                compositions = make_compositions(
-                    progress, prot_clusters, representatives, protein_representatives, protein_sizes
-                )
-
-                # compute and ponderate distances
-                progress.console.print(
-                    f"[bold blue]{'Computing':>12}[/] pairwise distance based on protein composition"
-                )
-                distance_vector = compute_distances(progress, compositions.X, args.jobs, args.precision)
-
-                # run hierarchical clustering
-                progress.console.print(
-                    f"[bold blue]{'Clustering':>12}[/] gene clusters using {args.clustering_method} linkage"
-                )
-                Z = linkage(distance_vector, method=args.clustering_method)
-                flat = fcluster(Z, criterion="distance", t=args.clustering_distance)
-
-                # build GCFs based on flat clustering
-                gcfs3 = pandas.DataFrame(
-                    {
-                        "gcf_id": [f"{args.prefix}{i:07}" for i in flat],
-                        "nucleotide_representative": compositions.obs_names,
-                    }
-                )
-            else:
-                # fallback to nucleotide-only clustering
-                progress.console.print(f"[bold yellow]{'Using':>12}[/] nucleotide-only clustering (no proteins available)")
-                sorted_representatives = sorted(representatives, key=representatives.__getitem__)
-                gcfs3 = pandas.DataFrame(
-                    {
-                        "gcf_id": [f"{args.prefix}{i+1:07}" for i in range(len(sorted_representatives))],
-                        "nucleotide_representative": sorted_representatives,
-                    }
-                )
+            )
         else:
             sorted_representatives = sorted(representatives, key=representatives.__getitem__)
             gcfs3 = pandas.DataFrame(
@@ -619,11 +741,12 @@ def main(argv: typing.Optional[typing.List[str]] = None) -> int:
             )
 
 
+
         progress.console.print(
             f"[bold green]{'Built':>12}[/] {len(gcfs3.gcf_id.unique())} GCFs from {len(input_sequences)} initial clusters"
         )
 
-        # extract protein representative using the largest cluster of each GCF
+        # build GCFs based on flat clustering
         gcf3_representatives = (
             pandas.merge(
                 gcfs3,
