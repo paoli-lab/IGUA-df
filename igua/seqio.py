@@ -178,13 +178,13 @@ class GenBankDataset(BaseDataset):
         return protein_sizes
 
 
-class DefenseFinderDataset(BaseDataset):
-    """DefenseFinder dataset class.
-    This class is used to extract nucleotide and protein sequences from DefenseFinder output files.
+class FastaGFFDataset(BaseDataset):
+    """FastaGFF dataset class.
+    This class is used to extract nucleotide and protein sequences from fasta and GFF files specifying gene clusters.
     """
     def __init__(self) -> None:
-        """Initialize the DefenseFinderDataset class."""
-        self.defense_metadata: typing.Optional[typing.Union[pathlib.Path, str]] = None
+        """Initialize the FastaGFFDataset class."""
+        self.cluster_metadata: typing.Optional[typing.Union[pathlib.Path, str]] = None
         self.verbose: bool = False
         self.activity_filter: str = "defense"
         self.gff_cache_dir: typing.Optional[pathlib.Path] = None
@@ -197,10 +197,10 @@ class DefenseFinderDataset(BaseDataset):
     ) -> pandas.DataFrame:
         """Extracts nucleotide sequences from gene clusters."""
         extractor = GeneClusterExtractor(progress=progress, verbose=self.verbose)
-        progress.console.print(f"[bold blue]{'Using':>12}[/] cluster metadata file: [magenta]{self.defense_metadata}[/]")
+        progress.console.print(f"[bold blue]{'Using':>12}[/] cluster metadata file: [magenta]{self.cluster_metadata}[/]")
         
         try:
-            df = pandas.read_csv(self.defense_metadata, sep="\t")
+            df = pandas.read_csv(self.cluster_metadata, sep="\t")
             return self._process_genomes(progress, df, output, extractor, is_protein=False)
         except Exception as e:
             progress.console.print(f"[bold red]{'Error':>12}[/] reading cluster metadata: {e}")
@@ -215,10 +215,10 @@ class DefenseFinderDataset(BaseDataset):
     ) -> typing.Dict[str, int]:
         """Extracts protein sequences from gene clusters."""
         extractor = GeneClusterExtractor(progress=progress, verbose=self.verbose)
-        progress.console.print(f"[bold blue]{'Using':>12}[/] cluster metadata file: [magenta]{self.defense_metadata}[/]")
+        progress.console.print(f"[bold blue]{'Using':>12}[/] cluster metadata file: [magenta]{self.cluster_metadata}[/]")
 
         try:
-            df = pandas.read_csv(self.defense_metadata, sep="\t")
+            df = pandas.read_csv(self.cluster_metadata, sep="\t")
             return self._process_genomes(progress, df, output, extractor, is_protein=True, representatives=representatives)
         except Exception as e:
             progress.console.print(f"[bold red]{'Error':>12}[/] reading cluster metadata: {e}")

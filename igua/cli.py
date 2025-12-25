@@ -33,7 +33,7 @@ except ImportError:
     from argparse import HelpFormatter
 
 from . import __version__
-from .seqio import BaseDataset, GenBankDataset, DefenseFinderDataset, GFFDataset
+from .seqio import BaseDataset, GenBankDataset, FastaGFFDataset, GFFDataset
 from .mmseqs import MMSeqs, Database, Clustering
 from .hca import manhattan, linkage
 
@@ -375,8 +375,8 @@ def create_dataset(
                 
                 if all(col in header for col in metadata_cols):
                     progress.console.print(f"[bold blue]{'Detected':>12}[/] DefenseFinder metadata TSV format")
-                    dataset = DefenseFinderDataset()
-                    dataset.defense_metadata = input_file
+                    dataset = FastaGFFDataset()
+                    dataset.cluster_metadata = input_file
                     dataset.output_dir = getattr(args.output, "parent")
                     dataset.verbose = getattr(args, 'defense_finder_verbose', False)
                     dataset.activity_filter = getattr(args, 'activity', 'defense') 
@@ -681,8 +681,8 @@ def main(argv: typing.Optional[typing.List[str]] = None) -> int:
             prot_clusters = prot_result.to_dataframe(columns=["protein_representative", "protein_id"])
 
             # extract protein representatives - determine cluster_id based on dataset type
-            is_defense_finder = isinstance(dataset, DefenseFinderDataset)
-            if is_defense_finder and hasattr(dataset, 'defense_metadata') and dataset.defense_metadata:
+            is_defense_finder = isinstance(dataset, FastaGFFDataset)
+            if is_defense_finder and hasattr(dataset, 'cluster_metadata') and dataset.cluster_metadata:
                 # double underscore for DefenseFinder 
                 prot_clusters["cluster_id"] = (
                         prot_clusters["protein_id"].str.rsplit("__", n=1).str[0]

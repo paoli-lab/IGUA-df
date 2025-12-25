@@ -125,6 +125,7 @@ class GenomeResources:
         self.context = context
         self.console = console
         self._systems_df: Optional[pl.DataFrame] = None
+        self._genes_df: Optional[pl.DataFrame] = None
         self._genome_idx: Optional[Fasta] = None
         self._protein_idx: Optional[Fasta] = None
         self._gff_db: Optional[GFFIndex] = None
@@ -132,7 +133,7 @@ class GenomeResources:
 
     @property
     def systems_df(self) -> pl.DataFrame:
-        """Load and filter systems TSV (lazy-loaded, cached)"""
+        """Load and filter clusters TSV (lazy-loaded, cached)"""
         if self._systems_df is not None:
             return self._systems_df
             
@@ -149,9 +150,9 @@ class GenomeResources:
             else:
                 self.console.print(f"[bold yellow]{'Warning':>12}[/] No 'activity' column found")
         else:
-            self.console.print(f"[bold blue]{'Processing':>12}[/] all {original_count} systems")
+            self.console.print(f"[bold blue]{'Processing':>12}[/] all {original_count} clusters")
 
-        if (n_dup := df.filter(pl.col("sys_id").is_duplicated()).select("sys_id").unique()).height > 0:
+        if (n_dup := df.filter(pl.col("sys_id").is_duplicated()).select("sys_id").unique().height) > 0:
             dup_ids = df.filter(pl.col("sys_id").is_duplicated()).select("sys_id").unique().to_series().to_list()
             self.console.print(
                 f"[bold yellow]{'Warning':>12}[/] {n_dup} duplicate system/s: "
@@ -162,8 +163,27 @@ class GenomeResources:
         self._systems_df = df
         return self._systems_df
 
-    def filter_systems_by_representatives(self, representatives: Iterable[str]):
-        """Filter systems to only include representatives"""
+    @property
+    def genes_df(self) -> pl.DataFrame:
+        """Load genes TSV (lazy-loaded, cached)"""
+        if self._genes_df is not None:
+            return self._genes_df
+        
+        try:
+            self._genes_df = pl.read_csv(
+                self.context.genes_tsv,
+                separator="\t",
+                columns=["sys_id", "hit_id", "hit_pos"]
+            )
+            self.console.print(f"[bold blue]{'Loaded':>12}[/] genes TSV with {len(self._genes_df)} genes")
+        except Exception as e:
+            self.console.print(f"[bold yellow]{'Warning':>12}[/] Failed to load genes_tsv: {e}")
+            self._genes_df = pl.DataFrame()
+        
+        return self._genes_df
+
+    def filter_clusters_by_representatives(self, representatives: Iterable[str]):
+        """Filter clusters to only include representatives"""
         if self._systems_df is None:
             _ = self.systems_df
         
@@ -197,7 +217,7 @@ class GenomeResources:
         return self._coordinates_cache
     
     def _build_coordinates(self) -> List[SystemCoordinates]:
-        """Build coordinates for all systems."""
+        """Build coordinates for all clusters."""
         coordinates = []
         
         for row in self.systems_df.iter_rows(named=True):
@@ -213,7 +233,9 @@ class GenomeResources:
         try:
             gene_list = [g.strip() for g in row['protein_in_syst'].split(',') if g.strip()]
         except (KeyError, AttributeError):
-            return self._invalid_coord(sys_id, [], "Missing protein_in_syst column")
+            gene_list = self._get_genes_from_genes_tsv(sys_id)
+            if not gene_list:
+                return self._invalid_coord(sys_id, [], "Missing protein_in_syst column and no genes found in genes_tsv")
         
         if not gene_list:
             return self._invalid_coord(sys_id, [], "Empty gene list")
@@ -256,6 +278,25 @@ class GenomeResources:
             valid=True
         )
     
+    def _get_genes_from_genes_tsv(self, sys_id: str) -> List[str]:
+        """
+        Fallback method to extract gene list from genes_tsv file.
+        Uses the cached genes_df property.
+        """
+        if self.genes_df.is_empty():
+            return []
+        
+        genes = (
+            self.genes_df
+            .filter(pl.col("sys_id") == sys_id)
+            .sort("hit_pos")
+            .select("hit_id")
+            .to_series()
+            .to_list()
+        )
+        
+        return genes
+    
     def _invalid_coord(self, sys_id: str, genes: List[str], error: str, seq_id: str = "") -> SystemCoordinates:
         """Create an invalid SystemCoordinates object."""
         self.console.print(f"[bold yellow]{'Warning':>12}[/] {error} for system [bold cyan]{sys_id}[/]")
@@ -274,6 +315,7 @@ class GenomeResources:
     def cleanup(self):
         """Clean up resources to enable garbage collection."""
         self._systems_df = None
+        self._genes_df = None
         self._genome_idx = None
         self._protein_idx = None
         self._gff_db = None
@@ -298,7 +340,7 @@ class SequenceExtractor:
         valid_coords = [c for c in coordinates if c.valid]
         
         if not valid_coords:
-            self.console.print(f"[bold yellow]{'Warning':>12}[/] No valid systems to extract")
+            self.console.print(f"[bold yellow]{'Warning':>12}[/] No valid clusters to extract")
             return []
         
         contig_groups = {}
@@ -306,7 +348,7 @@ class SequenceExtractor:
             contig_groups.setdefault(coord.seq_id, []).append(coord)
         
         self.console.print(
-            f"[bold blue]{'Processing':>12}[/] {len(valid_coords)} systems across {len(contig_groups)} contigs"
+            f"[bold blue]{'Processing':>12}[/] {len(valid_coords)} clusters across {len(contig_groups)} contigs"
         )
         
         results = []
@@ -322,9 +364,9 @@ class SequenceExtractor:
         genome_idx: Fasta,
         output_file: TextIO
     ) -> List[Tuple[str, int, str]]:
-        """Extract all systems from a single contig."""
+        """Extract all clusters from a single contig."""
         if self.verbose:
-            self.console.print(f"[bold blue]{'Loading':>12}[/] contig {seq_id} ({len(systems)} systems)")
+            self.console.print(f"[bold blue]{'Loading':>12}[/] contig {seq_id} ({len(systems)} clusters)")
         
         results = []
         try:
@@ -357,15 +399,15 @@ class SequenceExtractor:
         protein_idx: Fasta,
         output_file: TextIO
     ) -> Dict[str, int]:
-        """Extract protein sequences for all systems."""
+        """Extract protein sequences for all clusters."""
         valid_coords = [c for c in coordinates if c.valid]
         
         if not valid_coords:
-            self.console.print(f"[bold yellow]{'Warning':>12}[/] No valid systems for protein extraction")
+            self.console.print(f"[bold yellow]{'Warning':>12}[/] No valid clusters for protein extraction")
             return {}
         
         total_genes = sum(len(c.genes) for c in valid_coords)
-        self.console.print(f"[bold blue]{'Processing':>12}[/] {total_genes} proteins from {len(valid_coords)} systems")
+        self.console.print(f"[bold blue]{'Processing':>12}[/] {total_genes} proteins from {len(valid_coords)} clusters")
         
         protein_sizes = {}
         for coord in valid_coords:
@@ -430,13 +472,13 @@ class GeneClusterExtractor:
         
         try:
             if representatives:
-                self._cached_resources.filter_systems_by_representatives(representatives)
+                self._cached_resources.filter_clusters_by_representatives(representatives)
             
-            self.console.print(f"[bold blue]{'Building':>12}[/] system coordinates")
+            self.console.print(f"[bold blue]{'Building':>12}[/] cluster coordinates")
             coordinates = self._cached_resources.coordinates
             
             valid_count = sum(1 for c in coordinates if c.valid)
-            self.console.print(f"[bold green]{'Validated':>12}[/] {valid_count}/{len(coordinates)} gene clusters")
+            self.console.print(f"[bold green]{'Validated':>12}[/] {valid_count}/{len(coordinates)} clusters")
             
             self.console.print(f"[bold blue]{'Extracting':>12}[/] cluster sequences")
             results = self._extractor.extract_genomic_sequences(
@@ -470,7 +512,7 @@ class GeneClusterExtractor:
         
         try:
             if representatives and not self._cached_resources:
-                resources.filter_systems_by_representatives(representatives)
+                resources.filter_clusters_by_representatives(representatives)
             
             self.console.print(f"[bold blue]{'Loading':>12}[/] coordinates")
             coordinates = resources.coordinates
@@ -482,7 +524,7 @@ class GeneClusterExtractor:
             
             self.console.print(
                 f"[bold green]{'Extracted':>12}[/] {len(protein_sizes)} proteins from "
-                f"{sum(1 for c in coordinates if c.valid)} gene clusters for [bold cyan]{context.genome_id}[/]"
+                f"{sum(1 for c in coordinates if c.valid)} clusters for [bold cyan]{context.genome_id}[/]"
             )
             return protein_sizes
             
