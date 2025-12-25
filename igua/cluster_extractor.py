@@ -4,11 +4,15 @@ import uuid
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional, TextIO, Tuple
+import gzip
+import io
 
 import polars as pl
 import rich.progress
-from pyfaidx import Fasta
 from rich.console import Console
+
+
+_GZIP_MAGIC = b'\x1f\x8b'
 
 
 @dataclass
@@ -94,6 +98,89 @@ class GFFIndex:
         return gene_id in self._index
 
 
+class FastaReader:
+    """Streaming FASTA reader."""
+
+    @staticmethod
+    def read_fasta(file_path: Path) -> Iterable[Tuple[str, str]]:
+        """Stream FASTA records from file (supports gzip)."""
+        opener = gzip.open if file_path.suffix == '.gz' else open
+        
+        with opener(file_path, 'rt') as f:
+            name = None
+            sequence = []
+            
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                    
+                if line.startswith('>'):
+                    if name is not None:
+                        yield name, ''.join(sequence)
+                    name = line[1:].split()[0]
+                    sequence = []
+                else:
+                    sequence.append(line)
+            
+            if name is not None:
+                yield name, ''.join(sequence)
+
+
+class ProteinIndex:
+    """In-memory protein index for fast lookup."""
+    
+    def __init__(self, protein_fasta: Path):
+        self.path = protein_fasta
+        self._sequences: Dict[str, str] = {}
+        self._headers: Dict[str, str] = {}
+        self._build_index()
+    
+    def _build_index(self):
+        """Build protein sequence index."""
+        opener = gzip.open if self.path.suffix == '.gz' else open
+        
+        with opener(self.path, 'rt') as f:
+            seq_id = None
+            full_header = None
+            sequence = []
+            
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                    
+                if line.startswith('>'):
+                    if seq_id is not None:
+                        self._sequences[seq_id] = ''.join(sequence)
+                        self._headers[seq_id] = full_header
+                    
+                    full_header = line[1:]
+                    seq_id = full_header.split()[0]
+                    sequence = []
+                else:
+                    sequence.append(line)
+            
+            if seq_id is not None:
+                self._sequences[seq_id] = ''.join(sequence)
+                self._headers[seq_id] = full_header
+    
+    def get(self, protein_id: str) -> Optional[str]:
+        """Get protein sequence by ID."""
+        return self._sequences.get(protein_id)
+    
+    def get_header(self, protein_id: str) -> Optional[str]:
+        """Get full header by ID."""
+        return self._headers.get(protein_id)
+    
+    def keys(self):
+        """Return all protein IDs."""
+        return self._sequences.keys()
+    
+    def __contains__(self, protein_id: str) -> bool:
+        return protein_id in self._sequences
+
+
 class GenomeContext:
     """Immutable data container for genome/strain file paths and metadata."""
 
@@ -142,8 +229,7 @@ class GenomeResources:
         self.console = console
         self._systems_df: Optional[pl.DataFrame] = None
         self._genes_df: Optional[pl.DataFrame] = None
-        self._genome_idx: Optional[Fasta] = None
-        self._protein_idx: Optional[Fasta] = None
+        self._protein_idx: Optional[ProteinIndex] = None
         self._gff_db: Optional[GFFIndex] = None
         self._coordinates_cache: Optional[List[SystemCoordinates]] = None
 
@@ -234,15 +320,9 @@ class GenomeResources:
         self._coordinates_cache = None
 
     @property
-    def genome_idx(self) -> Fasta:
-        if self._genome_idx is None:
-            self._genome_idx = Fasta(str(self.context.genomic_fasta))
-        return self._genome_idx
-
-    @property
-    def protein_idx(self) -> Fasta:
+    def protein_idx(self) -> ProteinIndex:
         if self._protein_idx is None:
-            self._protein_idx = Fasta(str(self.context.protein_fasta))
+            self._protein_idx = ProteinIndex(self.context.protein_fasta)
         return self._protein_idx
 
     @property
@@ -304,11 +384,6 @@ class GenomeResources:
             )
 
         seq_id = list(seq_ids)[0]
-
-        if seq_id not in self.genome_idx:
-            return self._invalid_coord(
-                sys_id, gene_list, f"Contig/sequence {seq_id} not in genome", seq_id
-            )
 
         start = min(min(f["start"], f["end"]) for f in found_features.values())
         end = max(max(f["start"], f["end"]) for f in found_features.values())
@@ -376,7 +451,6 @@ class GenomeResources:
         """Clean up resources to enable garbage collection."""
         self._systems_df = None
         self._genes_df = None
-        self._genome_idx = None
         self._protein_idx = None
         self._gff_db = None
         self._coordinates_cache = None
@@ -394,10 +468,10 @@ class SequenceExtractor:
     def extract_genomic_sequences(
         self,
         coordinates: List[SystemCoordinates],
-        genome_idx: Fasta,
+        genomic_fasta: Path,
         output_file: TextIO,
     ) -> List[Tuple[str, int, str]]:
-        """Extract genomic sequences grouped by contig for efficiency."""
+        """Extract genomic sequences by streaming FASTA file."""
         valid_coords = [c for c in coordinates if c.valid]
 
         if not valid_coords:
@@ -406,7 +480,7 @@ class SequenceExtractor:
             )
             return []
 
-        contig_groups = {}
+        contig_groups: Dict[str, List[SystemCoordinates]] = {}
         for coord in valid_coords:
             contig_groups.setdefault(coord.seq_id, []).append(coord)
 
@@ -415,68 +489,53 @@ class SequenceExtractor:
         )
 
         results = []
-        for seq_id, systems in contig_groups.items():
-            results.extend(
-                self._extract_from_contig(seq_id, systems, genome_idx, output_file)
-            )
-
-        return results
-
-    def _extract_from_contig(
-        self,
-        seq_id: str,
-        systems: List[SystemCoordinates],
-        genome_idx: Fasta,
-        output_file: TextIO,
-    ) -> List[Tuple[str, int, str]]:
-        """Extract all clusters from a single contig."""
-        if self.verbose:
-            self.console.print(
-                f"[bold blue]{'Loading':>12}[/] contig {seq_id} ({len(systems)} clusters)"
-            )
-
-        results = []
-        try:
-            contig_seq = genome_idx[seq_id]
-
-            for coord in systems:
+        
+        for seq_id, sequence in FastaReader.read_fasta(genomic_fasta):
+            if seq_id not in contig_groups:
+                continue
+            
+            if self.verbose:
+                self.console.print(
+                    f"[bold blue]{'Loading':>12}[/] contig {seq_id} ({len(contig_groups[seq_id])} clusters)"
+                )
+            
+            for coord in contig_groups[seq_id]:
                 try:
-                    seq = str(contig_seq[coord.start_coord - 1 : coord.end_coord])
-                    output_file.write(f">{coord.sys_id}\n{seq}\n")
-
+                    subseq = sequence[coord.start_coord - 1 : coord.end_coord]
+                    output_file.write(f">{coord.sys_id}\n{subseq}\n")
+                    
                     if self.verbose:
                         self.console.print(
-                            f"[bold green]{'Extracted':>12}[/] {coord.sys_id} ({len(seq)} bp)"
+                            f"[bold green]{'Extracted':>12}[/] {coord.sys_id} ({len(subseq)} bp)"
                         )
-
-                    results.append((coord.sys_id, len(seq), str(coord.fasta_file)))
+                    
+                    results.append((coord.sys_id, len(subseq), str(coord.fasta_file)))
                 except Exception as e:
                     self.console.print(
                         f"[bold red]{'Error':>12}[/] Failed to extract {coord.sys_id}: {e}"
                     )
-
-            del contig_seq
-
-        except KeyError:
-            self.console.print(
-                f"[bold red]{'Error':>12}[/] Contig {seq_id} not found in genome"
-            )
-        except Exception as e:
-            self.console.print(
-                f"[bold red]{'Error':>12}[/] Failed to load contig {seq_id}: {e}"
-            )
+            
+            del contig_groups[seq_id]
+            
+            if not contig_groups:
+                break
+        
+        if contig_groups:
+            for seq_id in contig_groups:
+                self.console.print(
+                    f"[bold red]{'Error':>12}[/] Contig {seq_id} not found in genome"
+                )
 
         return results
 
     def extract_proteins(
         self,
         coordinates: List[SystemCoordinates],
-        protein_idx: Fasta,
+        protein_idx: ProteinIndex,
         protein_fasta_path: Path,
         output_file: TextIO,
     ) -> Dict[str, int]:
         """Extract protein sequences for all clusters."""
-        # Check if we need to rebuild the cache for a new protein FASTA
         if self._cached_protein_fasta != protein_fasta_path:
             self._protein_lookup_cache = None
             self._cached_protein_fasta = protein_fasta_path
@@ -508,15 +567,15 @@ class SequenceExtractor:
 
         return protein_sizes
 
-    def _get_protein_sequence(self, gene_id: str, protein_idx: Fasta) -> Optional[str]:
+    def _get_protein_sequence(self, gene_id: str, protein_idx: ProteinIndex) -> Optional[str]:
         """Get protein sequence with fallback search."""
-        try:
-            return str(protein_idx[gene_id])
-        except KeyError:
-            return self._fallback_protein_search(gene_id, protein_idx)
+        seq = protein_idx.get(gene_id)
+        if seq:
+            return seq
+        return self._fallback_protein_search(gene_id, protein_idx)
 
     def _fallback_protein_search(
-        self, gene_id: str, protein_idx: Fasta
+        self, gene_id: str, protein_idx: ProteinIndex
     ) -> Optional[str]:
         """Fallback search using header attributes."""
         if self._protein_lookup_cache is None:
@@ -524,13 +583,13 @@ class SequenceExtractor:
                 f"[bold yellow]{'Building':>12}[/] fallback protein lookup map"
             )
             self._protein_lookup_cache = {
-                rec_id: protein_idx[rec_id].long_name for rec_id in protein_idx.keys()
+                rec_id: protein_idx.get_header(rec_id) for rec_id in protein_idx.keys()
             }
 
         for attr in ["locus_tag", "ID", "Name", "gene"]:
             for rec_id, header in self._protein_lookup_cache.items():
-                if re.search(rf"\[{attr}=({re.escape(gene_id)})\]", header):
-                    return str(protein_idx[rec_id])
+                if header and re.search(rf"\[{attr}=({re.escape(gene_id)})\]", header):
+                    return protein_idx.get(rec_id)
 
         return None
 
@@ -563,16 +622,11 @@ class GeneClusterExtractor:
             self._log_missing_files(context)
             return []
 
-        # Clean up cache if processing a different genome
         if self._cached_resources and not self._contexts_match(
             self._cached_resources.context, context
         ):
-            self.console.print(
-                f"[bold yellow]{'Cleaning':>12}[/] stale cache for new genome"
-            )
             self._cleanup_cached_resources()
 
-        # Create or reuse resources
         if not self._cached_resources:
             self._cached_resources = GenomeResources(context, self.console)
 
@@ -592,7 +646,7 @@ class GeneClusterExtractor:
 
             self.console.print(f"[bold blue]{'Extracting':>12}[/] cluster sequences")
             results = self._extractor.extract_genomic_sequences(
-                coordinates, self._cached_resources.genome_idx, output_file
+                coordinates, context.genomic_fasta, output_file
             )
 
             self.console.print(
@@ -647,7 +701,6 @@ class GeneClusterExtractor:
             traceback.print_exc()
             return {}
         finally:
-            # Always clean up after protein extraction
             self._cleanup_cached_resources()
 
     def _contexts_match(self, ctx1: GenomeContext, ctx2: GenomeContext) -> bool:
@@ -671,11 +724,7 @@ class GeneClusterExtractor:
             self.console.print(f"[bold blue]{'Reusing':>12}[/] cached genome resources")
             return self._cached_resources
 
-        # Clean up old cache if context changed
         if self._cached_resources:
-            self.console.print(
-                f"[bold yellow]{'Cleaning':>12}[/] stale cache for new genome"
-            )
             self._cleanup_cached_resources()
 
         if not context.is_valid():
