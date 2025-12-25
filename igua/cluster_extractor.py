@@ -14,6 +14,7 @@ from rich.console import Console
 @dataclass
 class SystemCoordinates:
     """Genomic coordinates for a gene cluster."""
+
     sys_id: str
     seq_id: str
     start_coord: int
@@ -27,61 +28,75 @@ class SystemCoordinates:
 
 class GFFIndex:
     """Fast, in-memory GFF index."""
-    
+
     def __init__(self, gff_path: Path):
         self.path = gff_path
         self._index: Dict[str, Dict] = {}
         self._build_index()
-    
+
     def _build_index(self):
         """Build comprehensive ID index (runs once)."""
-        with open(self.path, 'r') as f:
+        with open(self.path, "r") as f:
             for line in f:
-                if line.startswith('#') or not line.strip():
+                if line.startswith("#") or not line.strip():
                     continue
-                
-                parts = line.strip().split('\t')
-                if len(parts) < 9 or parts[2] not in ['gene', 'CDS']:
+
+                parts = line.strip().split("\t")
+                if len(parts) < 9 or parts[2] not in ["gene", "CDS"]:
                     continue
-                
+
                 seqid, _, ftype, start, end, _, strand, _, attrs = parts
-                attr_dict = dict(item.split('=', 1) for item in attrs.split(';') if '=' in item)
-                
+                attr_dict = dict(
+                    item.split("=", 1) for item in attrs.split(";") if "=" in item
+                )
+
                 feature = {
-                    'seqid': seqid,
-                    'type': ftype,
-                    'start': int(start),
-                    'end': int(end),
-                    'strand': strand,
-                    'attributes': attr_dict
+                    "seqid": seqid,
+                    "type": ftype,
+                    "start": int(start),
+                    "end": int(end),
+                    "strand": strand,
+                    "attributes": attr_dict,
                 }
-                
-                for key in ['ID', 'locus_tag', 'Name', 'gene', 'old_locus_tag', 'protein_id']:
+
+                for key in [
+                    "ID",
+                    "locus_tag",
+                    "Name",
+                    "gene",
+                    "old_locus_tag",
+                    "protein_id",
+                ]:
                     if val := attr_dict.get(key):
-                        for variant in [val, f"gene-{val}", f"cds-{val}", 
-                                       val.replace('_', '~'), val.replace('~', '_')]:
+                        for variant in [
+                            val,
+                            f"gene-{val}",
+                            f"cds-{val}",
+                            val.replace("_", "~"),
+                            val.replace("~", "_"),
+                        ]:
                             self._index[variant] = feature
-    
+
     def get(self, gene_id: str) -> Optional[Dict]:
         """O(1) lookup."""
         return self._index.get(gene_id)
-    
+
     def get_batch(self, gene_ids: List[str]) -> Dict[str, Optional[Dict]]:
         """Batch lookup for multiple genes."""
         return {gene_id: self._index.get(gene_id) for gene_id in gene_ids}
-    
+
     def __getitem__(self, gene_id: str) -> Dict:
         if (feature := self._index.get(gene_id)) is None:
             raise KeyError(f"Gene ID '{gene_id}' not found")
         return feature
-    
+
     def __contains__(self, gene_id: str) -> bool:
         return gene_id in self._index
 
 
 class GenomeContext:
     """Immutable data container for genome/strain file paths and metadata."""
-    
+
     def __init__(
         self,
         genome_id: Optional[str],
@@ -99,18 +114,19 @@ class GenomeContext:
         self.genomic_fasta = Path(genomic_fasta)
         self.protein_fasta = Path(protein_fasta)
         self.activity_filter = activity_filter
-        
+
         self.missing_files = [
-            f"{name}: {path}" 
+            f"{name}: {path}"
             for path, name in [
                 (self.systems_tsv, "systems_tsv"),
                 (self.genes_tsv, "genes_tsv"),
                 (self.gff_file, "gff_file"),
                 (self.genomic_fasta, "genomic_fasta"),
                 (self.protein_fasta, "protein_fasta"),
-            ] if not path.exists()
+            ]
+            if not path.exists()
         ]
-    
+
     def __repr__(self):
         return f"GenomeContext(genome_id='{self.genome_id}', files={5 - len(self.missing_files)}/5)"
 
@@ -136,24 +152,42 @@ class GenomeResources:
         """Load and filter clusters TSV (lazy-loaded, cached)"""
         if self._systems_df is not None:
             return self._systems_df
-            
+
         df = pl.read_csv(self.context.systems_tsv, separator="\t")
         original_count = len(df)
 
         if self.context.activity_filter.lower() != "all":
             if "activity" in df.columns:
-                df = df.filter(pl.col("activity").str.to_lowercase() == self.context.activity_filter.lower())
+                df = df.filter(
+                    pl.col("activity").str.to_lowercase()
+                    == self.context.activity_filter.lower()
+                )
                 self.console.print(
                     f"[bold green]{'Filtered':>12}[/] {original_count} → {len(df)} "
                     f"([bold cyan]{self.context.activity_filter}[/] only)"
                 )
             else:
-                self.console.print(f"[bold yellow]{'Warning':>12}[/] No 'activity' column found")
+                self.console.print(
+                    f"[bold yellow]{'Warning':>12}[/] No 'activity' column found"
+                )
         else:
-            self.console.print(f"[bold blue]{'Processing':>12}[/] all {original_count} clusters")
+            self.console.print(
+                f"[bold blue]{'Processing':>12}[/] all {original_count} clusters"
+            )
 
-        if (n_dup := df.filter(pl.col("sys_id").is_duplicated()).select("sys_id").unique().height) > 0:
-            dup_ids = df.filter(pl.col("sys_id").is_duplicated()).select("sys_id").unique().to_series().to_list()
+        if (
+            n_dup := df.filter(pl.col("sys_id").is_duplicated())
+            .select("sys_id")
+            .unique()
+            .height
+        ) > 0:
+            dup_ids = (
+                df.filter(pl.col("sys_id").is_duplicated())
+                .select("sys_id")
+                .unique()
+                .to_series()
+                .to_list()
+            )
             self.console.print(
                 f"[bold yellow]{'Warning':>12}[/] {n_dup} duplicate system/s: "
                 f"[cyan]{', '.join(dup_ids[:5])}{'...' if n_dup > 5 else ''}[/]"
@@ -168,26 +202,34 @@ class GenomeResources:
         """Load genes TSV (lazy-loaded, cached)"""
         if self._genes_df is not None:
             return self._genes_df
-        
+
         try:
             self._genes_df = pl.read_csv(
                 self.context.genes_tsv,
                 separator="\t",
-                columns=["sys_id", "hit_id", "hit_pos"]
+                columns=["sys_id", "hit_id", "hit_pos"],
             )
-            self.console.print(f"[bold blue]{'Loaded':>12}[/] genes TSV with {len(self._genes_df)} genes")
+            self.console.print(
+                f"[bold blue]{'Loaded':>12}[/] genes TSV with {len(self._genes_df)} genes"
+            )
         except Exception as e:
-            self.console.print(f"[bold yellow]{'Warning':>12}[/] Failed to load genes_tsv: {e}")
+            self.console.print(
+                f"[bold yellow]{'Warning':>12}[/] Failed to load genes_tsv: {e}"
+            )
             self._genes_df = pl.DataFrame()
-        
+
         return self._genes_df
 
     def filter_clusters_by_representatives(self, representatives: Iterable[str]):
         """Filter clusters to only include representatives"""
         if self._systems_df is None:
             _ = self.systems_df
-        
-        rep_list = list(representatives) if not isinstance(representatives, list) else representatives
+
+        rep_list = (
+            list(representatives)
+            if not isinstance(representatives, list)
+            else representatives
+        )
         self._systems_df = self._systems_df.filter(pl.col("sys_id").is_in(rep_list))
         self._coordinates_cache = None
 
@@ -215,58 +257,73 @@ class GenomeResources:
         if self._coordinates_cache is None:
             self._coordinates_cache = self._build_coordinates()
         return self._coordinates_cache
-    
+
     def _build_coordinates(self) -> List[SystemCoordinates]:
         """Build coordinates for all clusters."""
         coordinates = []
-        
+
         for row in self.systems_df.iter_rows(named=True):
             coord = self._parse_system_coordinates(row)
             coordinates.append(coord)
-        
+
         return coordinates
-    
+
     def _parse_system_coordinates(self, row: dict) -> SystemCoordinates:
         """Parse coordinates for a single system."""
-        sys_id = row['sys_id']
-        
+        sys_id = row["sys_id"]
+
         try:
-            gene_list = [g.strip() for g in row['protein_in_syst'].split(',') if g.strip()]
+            gene_list = [
+                g.strip() for g in row["protein_in_syst"].split(",") if g.strip()
+            ]
         except (KeyError, AttributeError):
             gene_list = self._get_genes_from_genes_tsv(sys_id)
             if not gene_list:
-                return self._invalid_coord(sys_id, [], "Missing protein_in_syst column and no genes found in genes_tsv")
-        
+                return self._invalid_coord(
+                    sys_id,
+                    [],
+                    "Missing protein_in_syst column and no genes found in genes_tsv",
+                )
+
         if not gene_list:
             return self._invalid_coord(sys_id, [], "Empty gene list")
-        
+
         found_features = {
-            gid: feat for gid, feat in self.gff_db.get_batch(gene_list).items() 
+            gid: feat
+            for gid, feat in self.gff_db.get_batch(gene_list).items()
             if feat is not None
         }
-        
+
         if not found_features:
             return self._invalid_coord(sys_id, gene_list, "No genes found in GFF")
-        
-        seq_ids = set(feat['seqid'] for feat in found_features.values())
+
+        seq_ids = set(feat["seqid"] for feat in found_features.values())
         if len(seq_ids) > 1:
-            return self._invalid_coord(sys_id, gene_list, f"Spans multiple contigs/sequences: {seq_ids}")
-        
+            return self._invalid_coord(
+                sys_id, gene_list, f"Spans multiple contigs/sequences: {seq_ids}"
+            )
+
         seq_id = list(seq_ids)[0]
-        
+
         if seq_id not in self.genome_idx:
-            return self._invalid_coord(sys_id, gene_list, f"Contig/sequence {seq_id} not in genome", seq_id)
-        
-        start = min(min(f['start'], f['end']) for f in found_features.values())
-        end = max(max(f['start'], f['end']) for f in found_features.values())
-        strand = list(found_features.values())[0]['strand']
-        
+            return self._invalid_coord(
+                sys_id, gene_list, f"Contig/sequence {seq_id} not in genome", seq_id
+            )
+
+        start = min(min(f["start"], f["end"]) for f in found_features.values())
+        end = max(max(f["start"], f["end"]) for f in found_features.values())
+        strand = list(found_features.values())[0]["strand"]
+
         region_size = end - start + 1
         if region_size > 1e5:
-            self.console.print(f"[bold yellow]{'Warning':>12}[/] System [bold cyan]{sys_id}[/] unusually large: {region_size} bp")
+            self.console.print(
+                f"[bold yellow]{'Warning':>12}[/] System [bold cyan]{sys_id}[/] unusually large: {region_size} bp"
+            )
         elif region_size < 50:
-            self.console.print(f"[bold yellow]{'Warning':>12}[/] System [bold cyan]{sys_id}[/] unusually small: {region_size} bp")
-        
+            self.console.print(
+                f"[bold yellow]{'Warning':>12}[/] System [bold cyan]{sys_id}[/] unusually small: {region_size} bp"
+            )
+
         return SystemCoordinates(
             sys_id=sys_id,
             seq_id=seq_id,
@@ -275,9 +332,9 @@ class GenomeResources:
             strand=strand,
             genes=gene_list,
             fasta_file=self.context.genomic_fasta,
-            valid=True
+            valid=True,
         )
-    
+
     def _get_genes_from_genes_tsv(self, sys_id: str) -> List[str]:
         """
         Fallback method to extract gene list from genes_tsv file.
@@ -285,21 +342,24 @@ class GenomeResources:
         """
         if self.genes_df.is_empty():
             return []
-        
+
         genes = (
-            self.genes_df
-            .filter(pl.col("sys_id") == sys_id)
+            self.genes_df.filter(pl.col("sys_id") == sys_id)
             .sort("hit_pos")
             .select("hit_id")
             .to_series()
             .to_list()
         )
-        
+
         return genes
-    
-    def _invalid_coord(self, sys_id: str, genes: List[str], error: str, seq_id: str = "") -> SystemCoordinates:
+
+    def _invalid_coord(
+        self, sys_id: str, genes: List[str], error: str, seq_id: str = ""
+    ) -> SystemCoordinates:
         """Create an invalid SystemCoordinates object."""
-        self.console.print(f"[bold yellow]{'Warning':>12}[/] {error} for system [bold cyan]{sys_id}[/]")
+        self.console.print(
+            f"[bold yellow]{'Warning':>12}[/] {error} for system [bold cyan]{sys_id}[/]"
+        )
         return SystemCoordinates(
             sys_id=sys_id,
             seq_id=seq_id,
@@ -309,7 +369,7 @@ class GenomeResources:
             genes=genes,
             fasta_file=self.context.genomic_fasta,
             valid=False,
-            error_msg=error
+            error_msg=error,
         )
 
     def cleanup(self):
@@ -324,91 +384,116 @@ class GenomeResources:
 
 class SequenceExtractor:
     """Handles extraction of genomic and protein sequences."""
-    
+
     def __init__(self, console: Console, verbose: bool = False):
         self.console = console
         self.verbose = verbose
         self._protein_lookup_cache: Optional[Dict[str, str]] = None
-    
+        self._cached_protein_fasta: Optional[Path] = None
+
     def extract_genomic_sequences(
-        self, 
+        self,
         coordinates: List[SystemCoordinates],
         genome_idx: Fasta,
-        output_file: TextIO
+        output_file: TextIO,
     ) -> List[Tuple[str, int, str]]:
         """Extract genomic sequences grouped by contig for efficiency."""
         valid_coords = [c for c in coordinates if c.valid]
-        
+
         if not valid_coords:
-            self.console.print(f"[bold yellow]{'Warning':>12}[/] No valid clusters to extract")
+            self.console.print(
+                f"[bold yellow]{'Warning':>12}[/] No valid clusters to extract"
+            )
             return []
-        
+
         contig_groups = {}
         for coord in valid_coords:
             contig_groups.setdefault(coord.seq_id, []).append(coord)
-        
+
         self.console.print(
             f"[bold blue]{'Processing':>12}[/] {len(valid_coords)} clusters across {len(contig_groups)} contigs"
         )
-        
+
         results = []
         for seq_id, systems in contig_groups.items():
-            results.extend(self._extract_from_contig(seq_id, systems, genome_idx, output_file))
-        
+            results.extend(
+                self._extract_from_contig(seq_id, systems, genome_idx, output_file)
+            )
+
         return results
-    
+
     def _extract_from_contig(
         self,
         seq_id: str,
         systems: List[SystemCoordinates],
         genome_idx: Fasta,
-        output_file: TextIO
+        output_file: TextIO,
     ) -> List[Tuple[str, int, str]]:
         """Extract all clusters from a single contig."""
         if self.verbose:
-            self.console.print(f"[bold blue]{'Loading':>12}[/] contig {seq_id} ({len(systems)} clusters)")
-        
+            self.console.print(
+                f"[bold blue]{'Loading':>12}[/] contig {seq_id} ({len(systems)} clusters)"
+            )
+
         results = []
         try:
             contig_seq = genome_idx[seq_id]
-            
+
             for coord in systems:
                 try:
-                    seq = str(contig_seq[coord.start_coord - 1:coord.end_coord])
+                    seq = str(contig_seq[coord.start_coord - 1 : coord.end_coord])
                     output_file.write(f">{coord.sys_id}\n{seq}\n")
-                    
+
                     if self.verbose:
-                        self.console.print(f"[bold green]{'Extracted':>12}[/] {coord.sys_id} ({len(seq)} bp)")
-                    
+                        self.console.print(
+                            f"[bold green]{'Extracted':>12}[/] {coord.sys_id} ({len(seq)} bp)"
+                        )
+
                     results.append((coord.sys_id, len(seq), str(coord.fasta_file)))
                 except Exception as e:
-                    self.console.print(f"[bold red]{'Error':>12}[/] Failed to extract {coord.sys_id}: {e}")
-            
+                    self.console.print(
+                        f"[bold red]{'Error':>12}[/] Failed to extract {coord.sys_id}: {e}"
+                    )
+
             del contig_seq
-            
+
         except KeyError:
-            self.console.print(f"[bold red]{'Error':>12}[/] Contig {seq_id} not found in genome")
+            self.console.print(
+                f"[bold red]{'Error':>12}[/] Contig {seq_id} not found in genome"
+            )
         except Exception as e:
-            self.console.print(f"[bold red]{'Error':>12}[/] Failed to load contig {seq_id}: {e}")
-        
+            self.console.print(
+                f"[bold red]{'Error':>12}[/] Failed to load contig {seq_id}: {e}"
+            )
+
         return results
-    
+
     def extract_proteins(
         self,
         coordinates: List[SystemCoordinates],
         protein_idx: Fasta,
-        output_file: TextIO
+        protein_fasta_path: Path,
+        output_file: TextIO,
     ) -> Dict[str, int]:
         """Extract protein sequences for all clusters."""
+        # Check if we need to rebuild the cache for a new protein FASTA
+        if self._cached_protein_fasta != protein_fasta_path:
+            self._protein_lookup_cache = None
+            self._cached_protein_fasta = protein_fasta_path
+
         valid_coords = [c for c in coordinates if c.valid]
-        
+
         if not valid_coords:
-            self.console.print(f"[bold yellow]{'Warning':>12}[/] No valid clusters for protein extraction")
+            self.console.print(
+                f"[bold yellow]{'Warning':>12}[/] No valid clusters for protein extraction"
+            )
             return {}
-        
+
         total_genes = sum(len(c.genes) for c in valid_coords)
-        self.console.print(f"[bold blue]{'Processing':>12}[/] {total_genes} proteins from {len(valid_coords)} clusters")
-        
+        self.console.print(
+            f"[bold blue]{'Processing':>12}[/] {total_genes} proteins from {len(valid_coords)} clusters"
+        )
+
         protein_sizes = {}
         for coord in valid_coords:
             for gene_id in coord.genes:
@@ -420,147 +505,198 @@ class SequenceExtractor:
                     self.console.print(
                         f"[bold yellow]{'Warning':>12}[/] Protein {gene_id} not found for system [bold cyan]{coord.sys_id}[/]"
                     )
-        
+
         return protein_sizes
-    
+
     def _get_protein_sequence(self, gene_id: str, protein_idx: Fasta) -> Optional[str]:
         """Get protein sequence with fallback search."""
         try:
             return str(protein_idx[gene_id])
         except KeyError:
             return self._fallback_protein_search(gene_id, protein_idx)
-    
-    def _fallback_protein_search(self, gene_id: str, protein_idx: Fasta) -> Optional[str]:
+
+    def _fallback_protein_search(
+        self, gene_id: str, protein_idx: Fasta
+    ) -> Optional[str]:
         """Fallback search using header attributes."""
         if self._protein_lookup_cache is None:
-            self.console.print(f"[bold yellow]{'Building':>12}[/] fallback protein lookup map")
+            self.console.print(
+                f"[bold yellow]{'Building':>12}[/] fallback protein lookup map"
+            )
             self._protein_lookup_cache = {
-                rec_id: protein_idx[rec_id].long_name 
-                for rec_id in protein_idx.keys()
+                rec_id: protein_idx[rec_id].long_name for rec_id in protein_idx.keys()
             }
-        
-        for attr in ['locus_tag', 'ID', 'Name', 'gene']:
+
+        for attr in ["locus_tag", "ID", "Name", "gene"]:
             for rec_id, header in self._protein_lookup_cache.items():
-                if re.search(rf'\[{attr}=({re.escape(gene_id)})\]', header):
+                if re.search(rf"\[{attr}=({re.escape(gene_id)})\]", header):
                     return str(protein_idx[rec_id])
-        
+
         return None
+
+    def cleanup(self):
+        """Clean up extractor's internal caches."""
+        self._protein_lookup_cache = None
+        self._cached_protein_fasta = None
 
 
 class GeneClusterExtractor:
     """High-level orchestrator for gene cluster extraction pipeline."""
-    
-    def __init__(self, progress: Optional[rich.progress.Progress] = None, verbose: bool = False):
+
+    def __init__(
+        self, progress: Optional[rich.progress.Progress] = None, verbose: bool = False
+    ):
         self.progress = progress
         self.console = progress.console if progress else Console()
         self.verbose = verbose
         self._cached_resources: Optional[GenomeResources] = None
         self._extractor = SequenceExtractor(self.console, verbose)
-    
+
     def extract_systems(
         self,
         context: GenomeContext,
         output_file: TextIO,
-        representatives: Optional[Iterable[str]] = None
+        representatives: Optional[Iterable[str]] = None,
     ) -> List[Tuple[str, int, str]]:
         """Extract genomic sequences for gene clusters."""
         if not context.is_valid():
             self._log_missing_files(context)
             return []
-        
-        self._cached_resources = GenomeResources(context, self.console)
-        
+
+        # Clean up cache if processing a different genome
+        if self._cached_resources and not self._contexts_match(
+            self._cached_resources.context, context
+        ):
+            self.console.print(
+                f"[bold yellow]{'Cleaning':>12}[/] stale cache for new genome"
+            )
+            self._cleanup_cached_resources()
+
+        # Create or reuse resources
+        if not self._cached_resources:
+            self._cached_resources = GenomeResources(context, self.console)
+
         try:
             if representatives:
-                self._cached_resources.filter_clusters_by_representatives(representatives)
-            
+                self._cached_resources.filter_clusters_by_representatives(
+                    representatives
+                )
+
             self.console.print(f"[bold blue]{'Building':>12}[/] cluster coordinates")
             coordinates = self._cached_resources.coordinates
-            
+
             valid_count = sum(1 for c in coordinates if c.valid)
-            self.console.print(f"[bold green]{'Validated':>12}[/] {valid_count}/{len(coordinates)} clusters")
-            
+            self.console.print(
+                f"[bold green]{'Validated':>12}[/] {valid_count}/{len(coordinates)} clusters"
+            )
+
             self.console.print(f"[bold blue]{'Extracting':>12}[/] cluster sequences")
             results = self._extractor.extract_genomic_sequences(
                 coordinates, self._cached_resources.genome_idx, output_file
             )
-            
+
             self.console.print(
                 f"[bold green]{'Extracted':>12}[/] {len(results)} gene clusters for [bold cyan]{context.genome_id}[/]"
             )
             return results
-            
+
         except Exception as e:
-            self.console.print(f"[bold red]{'Error':>12}[/] Fatal error for {context.genome_id}: {e}")
+            self.console.print(
+                f"[bold red]{'Error':>12}[/] Fatal error for {context.genome_id}: {e}"
+            )
             import traceback
+
             traceback.print_exc()
             return []
-        finally:
-            if not self._should_keep_cache():
-                self._cleanup_cached_resources()
-    
+
     def extract_proteins(
         self,
         context: GenomeContext,
         output_file: TextIO,
-        representatives: Optional[Iterable[str]] = None
+        representatives: Optional[Iterable[str]] = None,
     ) -> Dict[str, int]:
         """Extract protein sequences for gene clusters."""
         resources = self._get_or_create_resources(context)
         if resources is None:
             return {}
-        
+
         try:
-            if representatives and not self._cached_resources:
+            if representatives:
                 resources.filter_clusters_by_representatives(representatives)
-            
+
             self.console.print(f"[bold blue]{'Loading':>12}[/] coordinates")
             coordinates = resources.coordinates
-            
+
             self.console.print(f"[bold blue]{'Extracting':>12}[/] protein sequences")
             protein_sizes = self._extractor.extract_proteins(
-                coordinates, resources.protein_idx, output_file
+                coordinates, resources.protein_idx, context.protein_fasta, output_file
             )
-            
+
             self.console.print(
                 f"[bold green]{'Extracted':>12}[/] {len(protein_sizes)} proteins from "
                 f"{sum(1 for c in coordinates if c.valid)} clusters for [bold cyan]{context.genome_id}[/]"
             )
             return protein_sizes
-            
+
         except Exception as e:
-            self.console.print(f"[bold red]{'Error':>12}[/] Fatal error for {context.genome_id}: {e}")
+            self.console.print(
+                f"[bold red]{'Error':>12}[/] Fatal error for {context.genome_id}: {e}"
+            )
             import traceback
+
             traceback.print_exc()
             return {}
         finally:
+            # Always clean up after protein extraction
             self._cleanup_cached_resources()
-    
-    def _get_or_create_resources(self, context: GenomeContext) -> Optional[GenomeResources]:
+
+    def _contexts_match(self, ctx1: GenomeContext, ctx2: GenomeContext) -> bool:
+        """Check if two contexts refer to the same set of files."""
+        return (
+            ctx1.genes_tsv == ctx2.genes_tsv
+            and ctx1.systems_tsv == ctx2.systems_tsv
+            and ctx1.gff_file == ctx2.gff_file
+            and ctx1.genomic_fasta == ctx2.genomic_fasta
+            and ctx1.protein_fasta == ctx2.protein_fasta
+            and ctx1.activity_filter == ctx2.activity_filter
+        )
+
+    def _get_or_create_resources(
+        self, context: GenomeContext
+    ) -> Optional[GenomeResources]:
         """Get cached resources or create new ones."""
-        if self._cached_resources and self._cached_resources.context.genome_id == context.genome_id:
+        if self._cached_resources and self._contexts_match(
+            self._cached_resources.context, context
+        ):
             self.console.print(f"[bold blue]{'Reusing':>12}[/] cached genome resources")
             return self._cached_resources
-        
+
+        # Clean up old cache if context changed
+        if self._cached_resources:
+            self.console.print(
+                f"[bold yellow]{'Cleaning':>12}[/] stale cache for new genome"
+            )
+            self._cleanup_cached_resources()
+
         if not context.is_valid():
             self._log_missing_files(context)
             return None
-        
-        return GenomeResources(context, self.console)
-    
-    def _should_keep_cache(self) -> bool:
-        """Determine if cache should be kept for next operation."""
-        return self._cached_resources is not None
-    
+
+        self._cached_resources = GenomeResources(context, self.console)
+        return self._cached_resources
+
     def _cleanup_cached_resources(self):
         """Clean up cached resources and trigger garbage collection."""
         if self._cached_resources:
             self._cached_resources.cleanup()
             self._cached_resources = None
+        self._extractor.cleanup()
         gc.collect()
-    
+
     def _log_missing_files(self, context: GenomeContext):
         """Log missing files for a context."""
-        self.console.print(f"[bold red]Error:[/] Missing files for {context.genome_id}:")
+        self.console.print(
+            f"[bold red]Error:[/] Missing files for {context.genome_id}:"
+        )
         for missing in context.missing_files:
             self.console.print(f"  - {missing}")
