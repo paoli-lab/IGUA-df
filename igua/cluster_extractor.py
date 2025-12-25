@@ -352,6 +352,16 @@ class GenomeResources:
         """Parse coordinates for a single system."""
         sys_id = row["sys_id"]
 
+        sys_beg_gene = row.get("sys_beg")
+        sys_end_gene = row.get("sys_end")
+
+        if sys_beg_gene is None or sys_end_gene is None:
+            return self._invalid_coord(
+                sys_id,
+                [],
+                "Missing sys_beg or sys_end columns in systems TSV",
+            )
+
         try:
             gene_list = [
                 g.strip() for g in row["protein_in_syst"].split(",") if g.strip()
@@ -368,26 +378,41 @@ class GenomeResources:
         if not gene_list:
             return self._invalid_coord(sys_id, [], "Empty gene list")
 
-        found_features = {
-            gid: feat
-            for gid, feat in self.gff_db.get_batch(gene_list).items()
-            if feat is not None
-        }
+        beg_feature = self.gff_db.get(sys_beg_gene)
+        end_feature = self.gff_db.get(sys_end_gene)
 
-        if not found_features:
-            return self._invalid_coord(sys_id, gene_list, "No genes found in GFF")
-
-        seq_ids = set(feat["seqid"] for feat in found_features.values())
-        if len(seq_ids) > 1:
+        if beg_feature is None:
             return self._invalid_coord(
-                sys_id, gene_list, f"Spans multiple contigs/sequences: {seq_ids}"
+                sys_id, gene_list, f"Start gene '{sys_beg_gene}' not found in GFF"
             )
 
-        seq_id = list(seq_ids)[0]
+        if end_feature is None:
+            return self._invalid_coord(
+                sys_id, gene_list, f"End gene '{sys_end_gene}' not found in GFF"
+            )
 
-        start = min(min(f["start"], f["end"]) for f in found_features.values())
-        end = max(max(f["start"], f["end"]) for f in found_features.values())
-        strand = list(found_features.values())[0]["strand"]
+        seq_id_beg = beg_feature["seqid"]
+        seq_id_end = end_feature["seqid"]
+
+        if seq_id_beg != seq_id_end:
+            return self._invalid_coord(
+                sys_id,
+                gene_list,
+                f"Start and end genes on different contigs: {seq_id_beg} vs {seq_id_end}",
+            )
+
+        seq_id = seq_id_beg
+
+        start = min(
+            min(beg_feature["start"], beg_feature["end"]),
+            min(end_feature["start"], end_feature["end"])
+        )
+        end = max(
+            max(beg_feature["start"], beg_feature["end"]),
+            max(end_feature["start"], end_feature["end"])
+        )
+        
+        strand = beg_feature["strand"]
 
         region_size = end - start + 1
         if region_size > 1e5:
