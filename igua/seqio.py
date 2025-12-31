@@ -173,7 +173,7 @@ class GenBankDataset(BaseDataset):
                                     protein_sizes[protein_id] = len(translation)
                 progress.remove_task(task)
         progress.console.print(
-            f"[bold green]{'Extracted':>12}[/] {len(protein_sizes)} proteins from {len(representatives)} nucleotide representative"
+            f"[bold green]{'Extracted':>12}[/] {len(protein_sizes):,} proteins from {len(representatives):,} nucleotide representative"
         )
         return protein_sizes
 
@@ -315,7 +315,7 @@ class FastaGFFDataset(BaseDataset):
     def _log_sequence_summary(self, progress: rich.progress.Progress, results: typing.List, n_genomes: int):
         """Log summary for sequence extraction."""
         progress.console.print(
-            f"[bold green]{'Extracted':>12}[/] {len(results)} gene clusters in total from {n_genomes} strains/genomes"
+            f"[bold green]{'Extracted':>12}[/] {len(results):,} gene clusters in total from {n_genomes:,} strains/genomes"
         )
     
     def _log_protein_summary(self, progress: rich.progress.Progress, results: typing.Dict, representatives: typing.Optional[typing.Container[str]]):
@@ -328,7 +328,7 @@ class FastaGFFDataset(BaseDataset):
                 rep_count = "specified"
         
         progress.console.print(
-            f"[bold green]{'Extracted':>12}[/] {len(results)} proteins from {rep_count} representative gene clusters"
+            f"[bold green]{'Extracted':>12}[/] {len(results):,} proteins from {rep_count} representative gene clusters"
         )
 
 class GFFDataset(BaseDataset):

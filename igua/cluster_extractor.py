@@ -5,7 +5,6 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional, TextIO, Tuple
 import gzip
-import io
 
 import polars as pl
 import rich.progress
@@ -103,7 +102,7 @@ class FastaReader:
 
     @staticmethod
     def read_fasta(file_path: Path) -> Iterable[Tuple[str, str]]:
-        """Stream FASTA records from file (supports gzip)."""
+        """Stream FASTA records from file."""
         opener = gzip.open if file_path.suffix == '.gz' else open
         
         with opener(file_path, 'rt') as f:
@@ -404,12 +403,12 @@ class GenomeResources:
         seq_id = seq_id_beg
 
         start = min(
-            min(beg_feature["start"], beg_feature["end"]),
-            min(end_feature["start"], end_feature["end"])
+            beg_feature["start"], beg_feature["end"],
+            end_feature["start"], end_feature["end"]
         )
         end = max(
-            max(beg_feature["start"], beg_feature["end"]),
-            max(end_feature["start"], end_feature["end"])
+            beg_feature["start"], beg_feature["end"],
+            end_feature["start"], end_feature["end"]
         )
         
         strand = beg_feature["strand"]
@@ -656,11 +655,6 @@ class GeneClusterExtractor:
             self._cached_resources = GenomeResources(context, self.console)
 
         try:
-            if representatives:
-                self._cached_resources.filter_clusters_by_representatives(
-                    representatives
-                )
-
             self.console.print(f"[bold blue]{'Building':>12}[/] cluster coordinates")
             coordinates = self._cached_resources.coordinates
 
