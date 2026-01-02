@@ -14,6 +14,8 @@ import polars as pl
 import rich.progress
 from rich.console import Console
 
+from .profiler import profiler
+
 
 _GZIP_MAGIC = b'\x1f\x8b'
 
@@ -776,6 +778,7 @@ class SequenceExtractor:
         self._protein_lookup_cache: Optional[Dict[str, str]] = None
         self._cached_protein_fasta: Optional[Path] = None
 
+    @profiler.profile_function
     def extract_genomic_sequences(
         self,
         coordinates: List[SystemCoordinates],
@@ -850,6 +853,7 @@ class SequenceExtractor:
 
         return results
 
+    @profiler.profile_function
     def extract_proteins_from_gene_list(
         self,
         system_genes: Dict[str, List[str]],
@@ -1017,6 +1021,8 @@ class GeneClusterExtractor:
         self.verbose = verbose
         self._extractor = SequenceExtractor(self.console, verbose)
 
+
+    @profiler.profile_function
     def extract_systems(
         self,
         context: GenomeContext,
@@ -1067,6 +1073,7 @@ class GeneClusterExtractor:
             resources.cleanup()
             gc.collect()
 
+    @profiler.profile_function
     def extract_proteins_from_metadata(
         self,
         metadata: Dict,

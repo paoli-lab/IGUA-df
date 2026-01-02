@@ -24,6 +24,7 @@ from .cluster_extractor import (
     ClusterMetadataCache,
 )
 
+from .profiler import profiler
 
 _GZIP_MAGIC = b'\x1f\x8b'
 
@@ -53,6 +54,7 @@ class BaseDataset(abc.ABC):
         ) -> typing.Dict[str, int]:
         pass
     
+    # @profiler.profile_function
     def write_fasta(self, file: typing.TextIO, name: str, sequence: str) -> None:
         file.write(">{}\n".format(name))
         file.write(sequence)
@@ -201,6 +203,7 @@ class FastaGFFDataset(BaseDataset):
         self.gff_cache_dir: typing.Optional[pathlib.Path] = None
         self._metadata_cache_path: typing.Optional[pathlib.Path] = None
 
+    @profiler.profile_function
     def _create_genome_context(self, row: typing.Dict, genome_id: str) -> GenomeContext:
         """Create GenomeContext from a dataframe row."""
         return GenomeContext(
@@ -239,6 +242,7 @@ class FastaGFFDataset(BaseDataset):
                 columns=["cluster_id", "cluster_length", "filename"]
             ).set_index("cluster_id")
 
+    @profiler.profile_function
     def extract_proteins(
         self,
         progress: rich.progress.Progress,
@@ -273,6 +277,7 @@ class FastaGFFDataset(BaseDataset):
             progress.console.print(f"[bold red]{'Error':>12}[/] reading cluster metadata: {e}")
             return {}
 
+    @profiler.profile_function
     def _extract_and_cache_metadata(
         self,
         progress: rich.progress.Progress,
@@ -348,6 +353,7 @@ class FastaGFFDataset(BaseDataset):
             columns=["cluster_id", "cluster_length", "filename"]
         ).set_index("cluster_id")
 
+    @profiler.profile_function
     def _extract_proteins_from_cache(
         self,
         progress: rich.progress.Progress,
@@ -392,6 +398,7 @@ class FastaGFFDataset(BaseDataset):
         self._log_protein_summary(progress, protein_sizes, representatives)
         return protein_sizes
 
+    # @profiler.profile_function
     def _extract_proteins_direct(
         self,
         progress: rich.progress.Progress,

@@ -32,6 +32,8 @@ from .cluster_extractor import GenericClusterAdapter, DefenseFinderAdapter
 from .mmseqs import MMSeqs, Database, Clustering
 from .hca import manhattan, linkage
 
+from .profiler import profiler
+import time 
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -65,6 +67,14 @@ def build_parser() -> argparse.ArgumentParser:
         type=int,
         default=os.cpu_count(),
         metavar="N",
+    )
+    parser.add_argument(
+        "--profile-memory", 
+        help="Enable detailed memory profiling. Choose a level of verbosity from `quiet` (summary table, default) or `verbose` (print memory usage every time a function is called)", 
+        nargs="?",
+        const="quiet",
+        default=None,
+        choices={"quiet", "verbose"}
     )
 
     group_input = parser.add_argument_group(
@@ -343,8 +353,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     return parser
 
-
-
+# @profiler.profile_function
 def create_dataset(
     progress: rich.progress.Progress,
     args: argparse.Namespace,
@@ -494,7 +503,7 @@ def make_compositions(
         ),
     )
 
-
+# @profiler.profile_function
 def compute_distances(
     progress: rich.progress.Progress,
     compositions: scipy.sparse.csr_matrix,
@@ -539,6 +548,14 @@ def main(argv: typing.Optional[typing.List[str]] = None) -> int:
 
     start_time = datetime.datetime.now()
     start_time_str = start_time.strftime("%Y-%m-%d %H:%M:%S")
+    
+    
+    if args.profile_memory:
+        os.environ['IGUA_PROFILE'] = '1'
+        if args.profile_memory == 'verbose':
+            os.environ['IGUA_VERBOSE'] = '1'
+        profiler.enabled = True
+        profiler.start_time = time.time()
 
     params_nuc1, params_nuc2, params_prot = get_mmseqs_params(args)
 
@@ -837,6 +854,9 @@ def main(argv: typing.Optional[typing.List[str]] = None) -> int:
             progress.console.print(
                 f"[bold green]{'Saved':>12}[/] protein features to {str(args.features)!r}"
             )
+        
+        if profiler: 
+            profiler.report()
 
     end_time = datetime.datetime.now()
     end_time_str = end_time.strftime("%Y-%m-%d %H:%M:%S")

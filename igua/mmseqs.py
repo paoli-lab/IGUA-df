@@ -8,6 +8,8 @@ import pandas
 import rich.progress
 import tempfile
 
+from .profiler import profiler
+
 
 COMMANDS = {
   "easy-search",
@@ -273,6 +275,7 @@ class Database(_MMSeqsFile):
         self.mmseqs.run("convert2fasta", self.path, path).check_returncode()
         return path
 
+    # @profiler.profile_function
     def cluster(
         self, 
         output: pathlib.Path,
