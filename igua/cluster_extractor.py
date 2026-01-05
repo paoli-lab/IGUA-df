@@ -1,5 +1,5 @@
 import gc
-import json
+from enum import Enum
 import re
 import uuid
 from dataclasses import dataclass, asdict
@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Dict, Iterable, List, Optional, TextIO, Tuple
 import gzip
 import pickle
+import traceback
 
 import polars as pl
 import rich.progress
@@ -14,7 +15,6 @@ from rich.console import Console
 
 
 _GZIP_MAGIC = b'\x1f\x8b'
-
 
 @dataclass
 class SystemCoordinates:
@@ -280,6 +280,10 @@ class ProteinIndex:
         """
         return protein_id in self._sequences
 
+class DatasetType(Enum):
+    """Dataset format types."""
+    DEFENSE_FINDER = "defense_finder"
+    GENERIC = "generic"
 
 class GenomeContext:
     """Immutable data container for genome/strain file paths and metadata.
@@ -291,7 +295,9 @@ class GenomeContext:
         gff_file: Path to GFF annotation file.
         genomic_fasta: Path to genomic FASTA file.
         protein_fasta: Path to protein FASTA file.
-        activity_filter: Activity type filter (e.g., 'defense', 'all').
+        dataset_type: Type of dataset (generic or defense_finder).
+        activity_filter: Activity type filter (only for defense_finder).
+        column_mapping: Optional column name mapping for generic datasets.
         missing_files: List of missing file paths.
     """
 
@@ -303,7 +309,9 @@ class GenomeContext:
         gff_file: Path,
         genomic_fasta: Path,
         protein_fasta: Path,
-        activity_filter: str = "defense",
+        dataset_type: DatasetType = DatasetType.GENERIC,
+        activity_filter: str = "all",
+        column_mapping: Optional[Dict[str, str]] = None,
     ):
         """Initialize genome context.
         
@@ -314,7 +322,9 @@ class GenomeContext:
             gff_file: Path to GFF annotation file.
             genomic_fasta: Path to genomic FASTA file.
             protein_fasta: Path to protein FASTA file.
-            activity_filter: Activity type filter (default: 'defense').
+            dataset_type: Type of dataset (default: GENERIC).
+            activity_filter: Activity type filter for defense_finder (default: 'all').
+            column_mapping: Custom column names for generic format (default: None).
         """
         self.genome_id = genome_id if genome_id else str(uuid.uuid4())[:8]
         self.systems_tsv = Path(systems_tsv)
@@ -322,7 +332,15 @@ class GenomeContext:
         self.gff_file = Path(gff_file)
         self.genomic_fasta = Path(genomic_fasta)
         self.protein_fasta = Path(protein_fasta)
+        self.dataset_type = dataset_type
         self.activity_filter = activity_filter
+        
+        self.column_mapping = column_mapping or {
+            "sys_id": "sys_id",
+            "sys_beg": "sys_beg", 
+            "sys_end": "sys_end",
+            "genes": "protein_in_syst",
+        }
 
         self.missing_files = [
             f"{name}: {path}"
@@ -337,7 +355,11 @@ class GenomeContext:
         ]
 
     def __repr__(self):
-        return f"GenomeContext(genome_id='{self.genome_id}', files={5 - len(self.missing_files)}/5)"
+        return (
+            f"GenomeContext(genome_id='{self.genome_id}', "
+            f"dataset_type={self.dataset_type.value}, "
+            f"files={5 - len(self.missing_files)}/5)"
+        )
 
     def is_valid(self) -> bool:
         """Check if all required files exist.
@@ -375,7 +397,7 @@ class GenomeResources:
     def systems_df(self) -> pl.DataFrame:
         """Load and filter clusters TSV (lazy-loaded, cached).
         
-        Applies activity filter and removes duplicates.
+        Applies activity filter (Defense Finder mode only) and removes duplicates.
         
         Returns:
             Polars DataFrame with filtered systems.
@@ -386,7 +408,10 @@ class GenomeResources:
         df = pl.read_csv(self.context.systems_tsv, separator="\t")
         original_count = len(df)
 
-        if self.context.activity_filter.lower() != "all":
+        if (
+            self.context.dataset_type == DatasetType.DEFENSE_FINDER
+            and self.context.activity_filter.lower() != "all"
+        ):
             if "activity" in df.columns:
                 df = df.filter(
                     pl.col("activity").str.to_lowercase()
@@ -426,6 +451,7 @@ class GenomeResources:
 
         self._systems_df = df
         return self._systems_df
+
 
     @property
     def genes_df(self) -> pl.DataFrame:
@@ -510,21 +536,22 @@ class GenomeResources:
         Returns:
             SystemCoordinates instance.
         """
-        sys_id = row["sys_id"]
+        col_map = self.context.column_mapping
+        sys_id = row[col_map["sys_id"]]
 
-        sys_beg_gene = row.get("sys_beg")
-        sys_end_gene = row.get("sys_end")
+        sys_beg_gene = row.get(col_map["sys_beg"])
+        sys_end_gene = row.get(col_map["sys_end"])
 
         if sys_beg_gene is None or sys_end_gene is None:
             return self._invalid_coord(
                 sys_id,
                 [],
-                "Missing sys_beg or sys_end columns in systems TSV",
+                f"Missing '{col_map['sys_beg']}' or '{col_map['sys_end']}' columns in systems TSV",
             )
 
         try:
             gene_list = [
-                g.strip() for g in row["protein_in_syst"].split(",") if g.strip()
+                g.strip() for g in str(row[col_map["genes"]]).split(",") if g.strip()
             ]
         except (KeyError, AttributeError):
             gene_list = self._get_genes_from_genes_tsv(sys_id)
@@ -532,7 +559,7 @@ class GenomeResources:
                 return self._invalid_coord(
                     sys_id,
                     [],
-                    "Missing protein_in_syst column and no genes found in genes_tsv",
+                    f"Missing '{col_map['genes']}' column and no genes found in genes_tsv",
                 )
 
         if not gene_list:
@@ -594,6 +621,7 @@ class GenomeResources:
             fasta_file=str(self.context.genomic_fasta),
             valid=True,
         )
+
 
     def _get_genes_from_genes_tsv(self, sys_id: str) -> List[str]:
         """Extract gene list from genes_tsv file (fallback method).
@@ -727,7 +755,7 @@ class SequenceExtractor:
                     
                     if self.verbose:
                         self.console.print(
-                            f"[bold green]{'Extracted':>12}[/] {coord.sys_id} ({len(subseq)} bp)"
+                            f"[bold green]{'Extracted':>12}[/] [cyan] {coord.sys_id}[/] ({len(subseq)} bp)"
                         )
                     
                     results.append((coord.sys_id, len(subseq), coord.fasta_file))
@@ -775,7 +803,7 @@ class SequenceExtractor:
         
         total_genes = sum(len(genes) for genes in system_genes.values())
         self.console.print(
-            f"[bold blue]{'Processing':>12}[/] {total_genes} proteins from {len(system_genes)} systems"
+            f"[bold blue]{'Processing':>12}[/] {total_genes} proteins from {len(system_genes)} clusters"
         )
 
         protein_sizes = {}
@@ -960,7 +988,6 @@ class GeneClusterExtractor:
             self.console.print(
                 f"[bold red]{'Error':>12}[/] Fatal error for {context.genome_id}: {e}"
             )
-            import traceback
             traceback.print_exc()
             return []
         finally:
@@ -995,7 +1022,7 @@ class GeneClusterExtractor:
         
         if not valid_coords:
             self.console.print(
-                f"[bold yellow]{'Warning':>12}[/] No valid clusters for {genome_id}"
+                f"[bold yellow]{'Warning':>12}[/] No valid clusters for [bold cyan]{str(genome_id)}[/]"
             )
             return {}
         
@@ -1009,7 +1036,7 @@ class GeneClusterExtractor:
             
             self.console.print(
                 f"[bold green]{'Extracted':>12}[/] {len(protein_sizes)} proteins from "
-                f"{len(valid_coords)} clusters for [bold cyan]{genome_id}[/]"
+                f"{len(valid_coords)} clusters for [bold cyan]{str(genome_id)}[/]"
             )
             
             return protein_sizes
@@ -1018,7 +1045,6 @@ class GeneClusterExtractor:
             self.console.print(
                 f"[bold red]{'Error':>12}[/] Fatal error for {genome_id}: {e}"
             )
-            import traceback
             traceback.print_exc()
             return {}
 

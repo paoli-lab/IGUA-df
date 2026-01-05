@@ -7,6 +7,7 @@ import errno
 import functools
 import itertools
 import io
+import json
 import os
 import pathlib
 import tempfile
@@ -34,6 +35,8 @@ except ImportError:
 
 from . import __version__
 from .seqio import BaseDataset, GenBankDataset, FastaGFFDataset, GFFDataset
+
+from .cluster_extractor import DatasetType
 from .mmseqs import MMSeqs, Database, Clustering
 from .hca import manhattan, linkage
 
@@ -99,8 +102,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     group_input = parser.add_argument_group(
         "Input",
-        "Input files for the pipeline. Supports GenBank (.gb/.gbk), GFF (.gff/.gff3), "
-        "DefenseFinder metadata TSV, or individual DefenseFinder files.",
+        "Input files for the pipeline.",
     )
     group_input.add_argument(
         "-i",
@@ -110,6 +112,12 @@ def build_parser() -> argparse.ArgumentParser:
         type=pathlib.Path,
         default=[],
         required=False,
+    )
+    group_input.add_argument(
+        "--dataset-type",
+        help="Dataset type: 'genbank' for GenBank files, 'defense-finder' for DefenseFinder output, 'gene-cluster' for generic cluster TSV",
+        choices=["genbank", "defense-finder", "gene-cluster"],
+        default=None,
     )
 
     group_output = parser.add_argument_group(
@@ -319,47 +327,51 @@ def build_parser() -> argparse.ArgumentParser:
         metavar="INT",
     )
 
-    group_defense = parser.add_argument_group(
-        "DefenseFinder Mode",
-        "Arguments for processing DefenseFinder outputs. Use either individual files "
-        "or a metadata TSV with file paths.",
+    group_dataset = parser.add_argument_group(
+        "Dataset Configuration",
+        "Configuration for dataset-specific options.",
     )
-    group_defense.add_argument(
-        "--defense-systems-tsv",
-        help="Path to DefenseFinder systems TSV file (requires --defense-genes-tsv, --gff, --genome, --protein-file)",
+    group_dataset.add_argument(
+        "--activity",
+        help="Filter by defense system activity (defense-finder only): 'all' (default), 'defense', 'antidefense'",
+        default="all",
+        choices={"defense", "antidefense", "all"},
+    )
+    group_dataset.add_argument(
+        "--column-mapping",
+        help="JSON file mapping column names for gene-cluster format (e.g., '{\"sys_id\":\"cluster_id\",...}')",
         type=pathlib.Path,
     )
-    group_defense.add_argument(
-        "--defense-genes-tsv",
-        help="Path to DefenseFinder genes TSV file",
+    group_dataset.add_argument(
+        "--verbose",
+        help="Detailed output for extracted cluster sequences",
+        action="store_true",
+        default=False,
+    )
+    group_dataset.add_argument(
+        "--systems-tsv",
+        help="Path to systems/clusters TSV file (requires --genes-tsv, --gff-file, --genome-fasta, --protein-fasta)",
         type=pathlib.Path,
     )
-    group_defense.add_argument(
+    group_dataset.add_argument(
+        "--genes-tsv",
+        help="Path to cluster genes TSV file",
+        type=pathlib.Path,
+    )
+    group_dataset.add_argument(
         "--gff-file",
         help="Path to GFF annotation file",
         type=pathlib.Path,
     )
-    group_defense.add_argument(
-        "--genome-fasta-file",
+    group_dataset.add_argument(
+        "--genome-fasta",
         help="Path to genome FASTA file",
         type=pathlib.Path,
     )
-    group_defense.add_argument(
-        "--protein-fasta-file",
-        help="Path to protein FASTA file (.faa) - REQUIRED for individual file mode",
+    group_dataset.add_argument(
+        "--protein-fasta",
+        help="Path to protein FASTA file (.faa)",
         type=pathlib.Path,
-    )
-    group_defense.add_argument(
-        "--activity",
-        help="Filter by defense system activity: 'all' (default), 'defense', 'antidefense'",
-        default="all",
-        choices={"defense", "antidefense", "all"},
-    )
-    group_defense.add_argument(
-        "--defense-finder-verbose",
-        help="Detailed output for extracted defense systems genomic and protein sequences.",
-        action="store_true",
-        default=False,
     )
 
     return parser
@@ -369,71 +381,76 @@ def create_dataset(
     progress: rich.progress.Progress,
     args: argparse.Namespace,
 ) -> BaseDataset:
-    """Constructor for Dataset, handles inputs based on input file types and arguments"""
-
-    for input_file in args.input:
-        if input_file.suffix.lower() == ".tsv":
-            with open(input_file, "r") as f:
-                header = f.readline().strip().split("\t")
-
-                metadata_cols = [
-                    "systems_tsv",
-                    "genes_tsv",
-                    "gff_file",
-                    "genome_fasta_file",
-                    "protein_fasta_file",
-                ]
-
-                if all(col in header for col in metadata_cols):
-                    progress.console.print(
-                        f"[bold blue]{'Detected':>12}[/] DefenseFinder metadata TSV format"
-                    )
-                    dataset = FastaGFFDataset()
-                    dataset.cluster_metadata = input_file
-                    dataset.output_dir = getattr(args.output, "parent")
-                    dataset.verbose = getattr(args, "defense_finder_verbose", False)
-                    dataset.activity_filter = getattr(args, "activity", "defense")
-                    return dataset
-
-                progress.console.print(
-                    f"[yellow]{'Warning':>12}[/] TSV file found but header doesn't match DefenseFinder format"
-                )
-                raise TypeError(
-                    f"DefenseFinder TSV error for {input_file}. "
-                    f"Please check that your TSV file has the required column headers."
-                )
-
-    # traditional file type detection (GenBank, GFF, etc.)
-    extension_mapping = {
-        ".gb": GenBankDataset,
-        ".gbk": GenBankDataset,
-        ".genbank": GenBankDataset,
-        ".gff": GFFDataset,
-        ".gff3": GFFDataset,
-    }
-
-    dataset_classes = set()
-    unsupported_files = []
-
-    for file_path in args.input:
-        if file_path.suffix.lower() in extension_mapping:
-            dataset_classes.add(extension_mapping[file_path.suffix.lower()])
+    """Create dataset handler based on dataset type and input files."""
+    
+    dataset_type = args.dataset_type
+    
+    if dataset_type is None:
+        if args.input:
+            first_file = args.input[0]
+            if first_file.suffix.lower() in {".gb", ".gbk", ".genbank"}:
+                dataset_type = "genbank"
+            elif first_file.suffix.lower() == ".tsv":
+                dataset_type = "gene-cluster"
         else:
-            unsupported_files.append(file_path)
-
-    if unsupported_files:
-        raise TypeError(
-            f"Unsupported file type(s): {', '.join(str(f.suffix) for f in unsupported_files)}. "
-            f"Supported types are {', '.join(sorted(extension_mapping.keys()))} or DefenseFinder TSV metadata files."
+            dataset_type = "gene-cluster"  
+    
+    if dataset_type == "genbank":
+        progress.console.print(
+            f"[bold blue]{'Mode':>12}[/] GenBank files"
         )
-
-    if len(dataset_classes) > 1:
-        raise TypeError(
-            "Mixed file types detected. All files must be compatible with the same dataset type."
-        )
-
-    return dataset_classes.pop()()
-
+        return GenBankDataset()
+    
+    elif dataset_type == "defense-finder":
+        dataset = FastaGFFDataset()
+        dataset.dataset_type = DatasetType.DEFENSE_FINDER
+        dataset.verbose = args.verbose
+        dataset.activity_filter = args.activity
+        
+        if args.input:
+            dataset.cluster_metadata = args.input[0]
+            progress.console.print(
+                f"[bold blue]{'Mode':>12}[/] DefenseFinder format"
+            )
+            progress.console.print(
+                f"[bold blue]{'Metadata':>12}[/] [magenta]{args.input[0]}[/]"
+            )
+        
+        if args.column_mapping:
+            with open(args.column_mapping) as f:
+                dataset.column_mapping = json.load(f)
+            progress.console.print(
+                f"[bold blue]{'Mapping':>12}[/] [magenta]{args.column_mapping}[/]"
+            )
+        
+        return dataset
+    
+    else: 
+        dataset = FastaGFFDataset()
+        dataset.dataset_type = DatasetType.GENERIC
+        dataset.verbose = args.verbose
+        
+        if args.input:
+            dataset.cluster_metadata = args.input[0]
+            progress.console.print(
+                f"[bold blue]{'Mode':>12}[/] Generic gene cluster format"
+            )
+            progress.console.print(
+                f"[bold blue]{'Metadata':>12}[/] [magenta]{args.input[0]}[/]"
+            )
+        
+        if args.column_mapping:
+            with open(args.column_mapping) as f:
+                dataset.column_mapping = json.load(f)
+            progress.console.print(
+                f"[bold blue]{'Mapping':>12}[/] [magenta]{args.column_mapping}[/]"
+            )
+        else:
+            progress.console.print(
+                f"[bold yellow]{'Note':>12}[/] Using default column names (sys_id, genes, etc.)"
+            )
+        
+        return dataset
 
 def get_mmseqs_params(args: argparse.Namespace) -> typing.Tuple[dict, dict, dict]:
     """Build MMSeqs2 parameter dictionaries from command-line arguments."""
@@ -569,50 +586,40 @@ def main(argv: typing.Optional[typing.List[str]] = None) -> int:
         workdir = pathlib.Path(args.workdir)
         workdir.mkdir(parents=True, exist_ok=True)
 
-    # validate individual DefenseFinder file arguments
+    # validate individual file arguments
     individual_args = [
-        args.defense_systems_tsv,
-        args.defense_genes_tsv,
+        args.systems_tsv,
+        args.genes_tsv,
         args.gff_file,
-        args.genome_fasta_file,
-        args.protein_fasta_file,
+        args.genome_fasta,
+        args.protein_fasta,
     ]
 
-    # for Defense finder
     using_individual_files = any(individual_args)
 
     if using_individual_files:
-        # individual file mode requires all DefenseFinder arguments
         if not all(individual_args):
             parser.error(
-                "Individual DefenseFinder mode requires ALL of: "
-                "--defense-systems-tsv, --defense-genes-tsv, --gff-file, --genome-fasta-file, --protein-fasta-file"
+                "Individual file mode requires ALL of: "
+                "--systems-tsv, --genes-tsv, --gff-file, --genome-fasta, --protein-fasta"
             )
 
-        # DefenseFinder: when individual files supplied, input files not required
         if not args.input:
-            # create a single-row pd.df with the individual files
             input_dict_df = {
-                "genome_id": [os.path.basename(args.genome_fasta_file).split(".")[0]],
-                "systems_tsv": [str(args.defense_systems_tsv)],
-                "genes_tsv": [str(args.defense_genes_tsv)],
+                "genome_id": [os.path.basename(args.genome_fasta).split(".")[0]],
+                "systems_tsv": [str(args.systems_tsv)],
+                "genes_tsv": [str(args.genes_tsv)],
                 "gff_file": [str(args.gff_file)],
-                "genome_fasta_file": [str(args.genome_fasta_file)],
-                "protein_fasta_file": [str(args.protein_fasta_file)],
+                "genome_fasta_file": [str(args.genome_fasta)],
+                "protein_fasta_file": [str(args.protein_fasta)],
             }
 
             input_df = pandas.DataFrame(input_dict_df)
-
-            temp_tsv = workdir / "individual_files_metadata.tsv"
+            temp_tsv = workdir / "metadata.tsv"
             input_df.to_csv(temp_tsv, sep="\t", index=False)
-
             args.input = [temp_tsv]
-    else:
-        # metadata_tsv mode requires input files
-        if not args.input:
-            parser.error(
-                "Input files (-i/--input) are required when not using individual DefenseFinder files"
-            )
+    elif not args.input:
+        parser.error("Input files (-i/--input) are required")
 
     with contextlib.ExitStack() as ctx:
         # prepare progress bar

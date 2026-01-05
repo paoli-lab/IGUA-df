@@ -7,6 +7,7 @@ import tempfile
 import gzip
 import warnings
 import gc
+from io import StringIO
 
 import Bio.Seq
 import gb_io
@@ -17,6 +18,7 @@ import rich.progress
 from .mmseqs import MMSeqs
 from .mmseqs import Database
 from .cluster_extractor import (
+    DatasetType,
     GenomeContext,
     GeneClusterExtractor,
     ClusterMetadataCache,
@@ -189,9 +191,13 @@ class FastaGFFDataset(BaseDataset):
         """Initialize the FastaGFFDataset class."""
         self.cluster_metadata: typing.Optional[typing.Union[pathlib.Path, str]] = None
         self.verbose: bool = False
-        self.activity_filter: str = "defense"
+        self.activity_filter: str = "all"
         self.gff_cache_dir: typing.Optional[pathlib.Path] = None
         self._metadata_cache_path: typing.Optional[pathlib.Path] = None
+        
+        self.dataset_type: DatasetType = DatasetType.GENERIC
+        self.column_mapping: typing.Optional[typing.Dict[str, str]] = None
+
 
     def extract_sequences(
         self,
@@ -406,7 +412,6 @@ class FastaGFFDataset(BaseDataset):
                 
                 try:
                     coordinates = []
-                    from io import StringIO
                     temp_buffer = StringIO()
                     coords = extractor.extract_systems(context, temp_buffer)
                     
@@ -442,9 +447,11 @@ class FastaGFFDataset(BaseDataset):
             gff_file=pathlib.Path(row["gff_file"]),
             genomic_fasta=pathlib.Path(row["genome_fasta_file"]),
             protein_fasta=pathlib.Path(row["protein_fasta_file"]),
+            dataset_type=self.dataset_type,
             activity_filter=self.activity_filter,
+            column_mapping=self.column_mapping,
         )
-    
+
     def _log_protein_summary(
         self, 
         progress: rich.progress.Progress, 
