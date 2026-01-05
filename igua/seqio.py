@@ -18,7 +18,7 @@ import rich.progress
 from .mmseqs import MMSeqs
 from .mmseqs import Database
 from .cluster_extractor import (
-    DatasetType,
+    ClusterDataAdapter,
     GenomeContext,
     GeneClusterExtractor,
     ClusterMetadataCache,
@@ -185,18 +185,33 @@ class GenBankDataset(BaseDataset):
 
 class FastaGFFDataset(BaseDataset):
     """FastaGFF dataset class.
-    This class is used to extract nucleotide and protein sequences from fasta and GFF files specifying gene clusters.
+    
+    Uses adapters to handle different cluster data formats.
     """
-    def __init__(self) -> None:
-        """Initialize the FastaGFFDataset class."""
+    
+    def __init__(self, adapter: ClusterDataAdapter) -> None:
+        """Initialize the FastaGFFDataset class.
+        
+        Args:
+            adapter: Adapter for handling format-specific logic.
+        """
         self.cluster_metadata: typing.Optional[typing.Union[pathlib.Path, str]] = None
         self.verbose: bool = False
-        self.activity_filter: str = "all"
+        self.adapter = adapter
         self.gff_cache_dir: typing.Optional[pathlib.Path] = None
         self._metadata_cache_path: typing.Optional[pathlib.Path] = None
-        
-        self.dataset_type: DatasetType = DatasetType.GENERIC
-        self.column_mapping: typing.Optional[typing.Dict[str, str]] = None
+
+    def _create_genome_context(self, row: typing.Dict, genome_id: str) -> GenomeContext:
+        """Create GenomeContext from a dataframe row."""
+        return GenomeContext(
+            genome_id=genome_id,
+            systems_tsv=pathlib.Path(row["systems_tsv"]),
+            genes_tsv=pathlib.Path(row["genes_tsv"]),
+            gff_file=pathlib.Path(row["gff_file"]),
+            genomic_fasta=pathlib.Path(row["genome_fasta_file"]),
+            protein_fasta=pathlib.Path(row["protein_fasta_file"]),
+            adapter=self.adapter,
+        )
 
 
     def extract_sequences(
@@ -438,19 +453,6 @@ class FastaGFFDataset(BaseDataset):
         self._log_protein_summary(progress, protein_sizes, representatives)
         return protein_sizes
 
-    def _create_genome_context(self, row: typing.Dict, genome_id: str) -> GenomeContext:
-        """Create GenomeContext from a dataframe row."""
-        return GenomeContext(
-            genome_id=genome_id,
-            systems_tsv=pathlib.Path(row["systems_tsv"]),
-            genes_tsv=pathlib.Path(row["genes_tsv"]),
-            gff_file=pathlib.Path(row["gff_file"]),
-            genomic_fasta=pathlib.Path(row["genome_fasta_file"]),
-            protein_fasta=pathlib.Path(row["protein_fasta_file"]),
-            dataset_type=self.dataset_type,
-            activity_filter=self.activity_filter,
-            column_mapping=self.column_mapping,
-        )
 
     def _log_protein_summary(
         self, 
@@ -469,33 +471,3 @@ class FastaGFFDataset(BaseDataset):
         progress.console.print(
             f"[bold green]{'Extracted':>12}[/] {len(results):,} proteins from {rep_count} representative gene clusters"
         )
-
-
-class GFFDataset(BaseDataset):
-    """GFF dataset class.
-    This class is used to extract nucleotide and protein sequences from GFF files.
-    It inherits from the BaseDataset class and implements the extract_sequences
-    and extract_proteins methods.
-    """
-    def __init__(self, gff: typing.Optional[typing.Union[str, pathlib.Path]] = None):
-        """Initializes the GFFDataset class.
-
-        Args:
-            gff (typing.Optional[typing.Union[str, pathlib.Path]], optional): pathlib.Path to the GFF file. Defaults to None.
-        """
-    def extract_sequences(
-        self,
-        progress: rich.progress.Progress,
-        inputs: typing.List[pathlib.Path],
-        output: pathlib.Path,
-        ) -> pd.DataFrame: 
-        raise NotImplementedError("extract_sequences method is not implemented for GFFDataset")
-
-    def extract_proteins(
-        self,
-        progress: rich.progress.Progress,
-        inputs: typing.List[pathlib.Path],
-        output: pathlib.Path,
-        representatives: typing.Container[str]
-        ) -> typing.Dict[str, int]:
-        raise NotImplementedError("extract_proteins method is not implemented for GFFDataset")

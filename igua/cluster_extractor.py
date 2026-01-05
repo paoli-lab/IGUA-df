@@ -1,3 +1,4 @@
+from abc import ABC, abstractmethod
 import gc
 from enum import Enum
 import re
@@ -280,10 +281,115 @@ class ProteinIndex:
         """
         return protein_id in self._sequences
 
-class DatasetType(Enum):
-    """Dataset format types."""
-    DEFENSE_FINDER = "defense_finder"
-    GENERIC = "generic"
+class ClusterDataAdapter(ABC):
+    """Adapter interface for different cluster data formats.
+    
+    Handles format-specific loading, filtering, and column mapping,
+    presenting a unified interface to the core extraction logic.
+    """
+    
+    @abstractmethod
+    def load_systems(self, tsv_path: Path, console: Console) -> pl.DataFrame:
+        """Load and preprocess systems TSV.
+        
+        Args:
+            tsv_path: Path to systems TSV file.
+            console: Rich console for logging.
+            
+        Returns:
+            Preprocessed DataFrame with standardized column names.
+        """
+        pass
+    
+    @abstractmethod
+    def get_column_mapping(self) -> Dict[str, str]:
+        """Get column name mapping for this format.
+        
+        Returns:
+            Dictionary mapping internal names to TSV column names.
+        """
+        pass
+
+
+class DefenseFinderAdapter(ClusterDataAdapter):
+    """Adapter for DefenseFinder output format.
+    
+    Handles DefenseFinder-specific activity filtering and column names.
+    """
+    
+    def __init__(self, activity_filter: str = "all"):
+        """Initialize DefenseFinder adapter.
+        
+        Args:
+            activity_filter: Filter by activity type ('all', 'defense', 'antidefense').
+        """
+        self.activity_filter = activity_filter
+        self._column_mapping = {
+            "sys_id": "sys_id",
+            "sys_beg": "sys_beg",
+            "sys_end": "sys_end",
+            "genes": "protein_in_syst",
+        }
+    
+    def load_systems(self, tsv_path: Path, console: Console) -> pl.DataFrame:
+        """Load DefenseFinder systems with optional activity filtering."""
+        df = pl.read_csv(tsv_path, separator="\t")
+        original_count = len(df)
+        
+        # DefenseFinder-specific: activity filtering
+        if self.activity_filter.lower() != "all":
+            if "activity" in df.columns:
+                df = df.filter(
+                    pl.col("activity").str.to_lowercase() == self.activity_filter.lower()
+                )
+                console.print(
+                    f"[bold green]{'Filtered':>12}[/] {original_count} → {len(df)} "
+                    f"([bold cyan]{self.activity_filter}[/] only)"
+                )
+            else:
+                console.print(
+                    f"[bold yellow]{'Warning':>12}[/] No 'activity' column found"
+                )
+        else:
+            console.print(
+                f"[bold blue]{'Processing':>12}[/] all {original_count} clusters"
+            )
+        
+        return df
+    
+    def get_column_mapping(self) -> Dict[str, str]:
+        return self._column_mapping
+
+
+class GenericClusterAdapter(ClusterDataAdapter):
+    """Adapter for generic gene cluster TSV format.
+    
+    Supports custom column mappings for different TSV schemas.
+    """
+    
+    def __init__(self, column_mapping: Optional[Dict[str, str]] = None):
+        """Initialize generic cluster adapter.
+        
+        Args:
+            column_mapping: Custom column name mapping. If None, uses defaults.
+        """
+        self._column_mapping = column_mapping or {
+            "sys_id": "sys_id",
+            "sys_beg": "sys_beg",
+            "sys_end": "sys_end",
+            "genes": "protein_in_syst",
+        }
+    
+    def load_systems(self, tsv_path: Path, console: Console) -> pl.DataFrame:
+        """Load generic cluster systems without filtering."""
+        df = pl.read_csv(tsv_path, separator="\t")
+        console.print(
+            f"[bold blue]{'Processing':>12}[/] all {len(df)} clusters"
+        )
+        return df
+    
+    def get_column_mapping(self) -> Dict[str, str]:
+        return self._column_mapping
 
 class GenomeContext:
     """Immutable data container for genome/strain file paths and metadata.
@@ -295,9 +401,7 @@ class GenomeContext:
         gff_file: Path to GFF annotation file.
         genomic_fasta: Path to genomic FASTA file.
         protein_fasta: Path to protein FASTA file.
-        dataset_type: Type of dataset (generic or defense_finder).
-        activity_filter: Activity type filter (only for defense_finder).
-        column_mapping: Optional column name mapping for generic datasets.
+        adapter: Adapter for loading and preprocessing cluster data.
         missing_files: List of missing file paths.
     """
 
@@ -309,9 +413,7 @@ class GenomeContext:
         gff_file: Path,
         genomic_fasta: Path,
         protein_fasta: Path,
-        dataset_type: DatasetType = DatasetType.GENERIC,
-        activity_filter: str = "all",
-        column_mapping: Optional[Dict[str, str]] = None,
+        adapter: ClusterDataAdapter,
     ):
         """Initialize genome context.
         
@@ -322,9 +424,7 @@ class GenomeContext:
             gff_file: Path to GFF annotation file.
             genomic_fasta: Path to genomic FASTA file.
             protein_fasta: Path to protein FASTA file.
-            dataset_type: Type of dataset (default: GENERIC).
-            activity_filter: Activity type filter for defense_finder (default: 'all').
-            column_mapping: Custom column names for generic format (default: None).
+            adapter: Adapter for handling format-specific logic.
         """
         self.genome_id = genome_id if genome_id else str(uuid.uuid4())[:8]
         self.systems_tsv = Path(systems_tsv)
@@ -332,15 +432,7 @@ class GenomeContext:
         self.gff_file = Path(gff_file)
         self.genomic_fasta = Path(genomic_fasta)
         self.protein_fasta = Path(protein_fasta)
-        self.dataset_type = dataset_type
-        self.activity_filter = activity_filter
-        
-        self.column_mapping = column_mapping or {
-            "sys_id": "sys_id",
-            "sys_beg": "sys_beg", 
-            "sys_end": "sys_end",
-            "genes": "protein_in_syst",
-        }
+        self.adapter = adapter
 
         self.missing_files = [
             f"{name}: {path}"
@@ -357,7 +449,7 @@ class GenomeContext:
     def __repr__(self):
         return (
             f"GenomeContext(genome_id='{self.genome_id}', "
-            f"dataset_type={self.dataset_type.value}, "
+            f"adapter={self.adapter.__class__.__name__}, "
             f"files={5 - len(self.missing_files)}/5)"
         )
 
@@ -373,8 +465,10 @@ class GenomeContext:
 class GenomeResources:
     """Manages lazy-loading and caching of genome resources.
     
+    Format-agnostic - uses adapter for format-specific operations.
+    
     Attributes:
-        context: Genome context with file paths.
+        context: Genome context with file paths and adapter.
         console: Rich console for logging.
     """
 
@@ -382,7 +476,7 @@ class GenomeResources:
         """Initialize genome resources manager.
         
         Args:
-            context: Genome context with file paths.
+            context: Genome context with file paths and adapter.
             console: Rich console for logging.
         """
         self.context = context
@@ -397,7 +491,7 @@ class GenomeResources:
     def systems_df(self) -> pl.DataFrame:
         """Load and filter clusters TSV (lazy-loaded, cached).
         
-        Applies activity filter (Defense Finder mode only) and removes duplicates.
+        Delegates format-specific logic to adapter.
         
         Returns:
             Polars DataFrame with filtered systems.
@@ -405,30 +499,7 @@ class GenomeResources:
         if self._systems_df is not None:
             return self._systems_df
 
-        df = pl.read_csv(self.context.systems_tsv, separator="\t")
-        original_count = len(df)
-
-        if (
-            self.context.dataset_type == DatasetType.DEFENSE_FINDER
-            and self.context.activity_filter.lower() != "all"
-        ):
-            if "activity" in df.columns:
-                df = df.filter(
-                    pl.col("activity").str.to_lowercase()
-                    == self.context.activity_filter.lower()
-                )
-                self.console.print(
-                    f"[bold green]{'Filtered':>12}[/] {original_count} → {len(df)} "
-                    f"([bold cyan]{self.context.activity_filter}[/] only)"
-                )
-            else:
-                self.console.print(
-                    f"[bold yellow]{'Warning':>12}[/] No 'activity' column found"
-                )
-        else:
-            self.console.print(
-                f"[bold blue]{'Processing':>12}[/] all {original_count} clusters"
-            )
+        df = self.context.adapter.load_systems(self.context.systems_tsv, self.console)
 
         if (
             n_dup := df.filter(pl.col("sys_id").is_duplicated())
@@ -530,13 +601,15 @@ class GenomeResources:
     def _parse_system_coordinates(self, row: dict) -> SystemCoordinates:
         """Parse coordinates for a single system.
         
+        Uses adapter's column mapping for format flexibility.
+        
         Args:
             row: Dictionary containing system data from TSV row.
             
         Returns:
             SystemCoordinates instance.
         """
-        col_map = self.context.column_mapping
+        col_map = self.context.adapter.get_column_mapping()
         sys_id = row[col_map["sys_id"]]
 
         sys_beg_gene = row.get(col_map["sys_beg"])
