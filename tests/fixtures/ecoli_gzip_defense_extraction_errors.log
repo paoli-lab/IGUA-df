@@ -1,0 +1,58 @@
+[2025-10-03 16:11:14] DUPLICATE_SYSTEMS_WARNING: Found 2 duplicate system IDs in systems TSV
+  Strain: ECOR-44
+  Files:
+    systems_tsv: /home/radoykov/projects/defense-system-clustering/data/E_coli-15-strains/ECOR-44/ECOR-44-defensefinder/ECOR-44_defense_finder_systems.tsv
+    genes_tsv: /home/radoykov/projects/defense-system-clustering/data/E_coli-15-strains/ECOR-44/ECOR-44-defensefinder/ECOR-44_defense_finder_genes.tsv
+    gff_file: /home/radoykov/projects/defense-system-clustering/data/E_coli-15-strains/ECOR-44/ECOR-44.gff
+    fasta_file: /home/radoykov/projects/defense-system-clustering/data/E_coli-15-strains/ECOR-44/ECOR-44.fa
+  Exception: {'duplicate_sys_ids': ['CFNGHENL_RM_Type_II_17', 'CFNGHENL_Shedu_1'], 'systems_tsv_file': '/home/radoykov/projects/defense-system-clustering/data/E_coli-15-strains/ECOR-44/ECOR-44-defensefinder/ECOR-44_defense_finder_systems.tsv', 'total_systems': 25, 'unique_systems': 23}
+--------------------------------------------------------------------------------
+[2025-10-03 16:11:15] LARGE_REGION_WARNING: System region too large: 10952 bp
+  Strain: BW25113
+  System: LJEHKFHO_RM_Type_IV_7
+  Files:
+    systems_tsv: /home/radoykov/projects/defense-system-clustering/data/E_coli-15-strains/BW25113/BW25113-defensefinder/BW25113_defense_finder_systems.tsv
+    genes_tsv: /home/radoykov/projects/defense-system-clustering/data/E_coli-15-strains/BW25113/BW25113-defensefinder/BW25113_defense_finder_genes.tsv
+    gff_file: /home/radoykov/projects/defense-system-clustering/data/E_coli-15-strains/BW25113/BW25113.gff
+    fasta_file: /home/radoykov/projects/defense-system-clustering/data/E_coli-15-strains/BW25113/BW25113.fa
+    system_id: LJEHKFHO_RM_Type_IV_7
+--------------------------------------------------------------------------------
+[2025-10-03 16:11:17] DUPLICATE_SYSTEMS_WARNING: Found 2 duplicate system IDs in systems TSV
+  Strain: ECOR-46
+  Files:
+    systems_tsv: /home/radoykov/projects/defense-system-clustering/data/E_coli-15-strains/ECOR-46/ECOR-46-defensefinder/ECOR-46_defense_finder_systems.tsv
+    genes_tsv: /home/radoykov/projects/defense-system-clustering/data/E_coli-15-strains/ECOR-46/ECOR-46-defensefinder/ECOR-46_defense_finder_genes.tsv
+    gff_file: /home/radoykov/projects/defense-system-clustering/data/E_coli-15-strains/ECOR-46/ECOR-46.gff
+    fasta_file: /home/radoykov/projects/defense-system-clustering/data/E_coli-15-strains/ECOR-46/ECOR-46.fa
+  Exception: {'duplicate_sys_ids': ['KBCPMFPO_AbiE_1', 'KBCPMFPO_SanaTA_15'], 'systems_tsv_file': '/home/radoykov/projects/defense-system-clustering/data/E_coli-15-strains/ECOR-46/ECOR-46-defensefinder/ECOR-46_defense_finder_systems.tsv', 'total_systems': 20, 'unique_systems': 18}
+--------------------------------------------------------------------------------
+[2025-10-03 16:11:17] LARGE_REGION_WARNING: System region too large: 14913 bp
+  Strain: ECOR-46
+  System: KBCPMFPO_BREX_I_9
+  Files:
+    systems_tsv: /home/radoykov/projects/defense-system-clustering/data/E_coli-15-strains/ECOR-46/ECOR-46-defensefinder/ECOR-46_defense_finder_systems.tsv
+    genes_tsv: /home/radoykov/projects/defense-system-clustering/data/E_coli-15-strains/ECOR-46/ECOR-46-defensefinder/ECOR-46_defense_finder_genes.tsv
+    gff_file: /home/radoykov/projects/defense-system-clustering/data/E_coli-15-strains/ECOR-46/ECOR-46.gff
+    fasta_file: /home/radoykov/projects/defense-system-clustering/data/E_coli-15-strains/ECOR-46/ECOR-46.fa
+    system_id: KBCPMFPO_BREX_I_9
+--------------------------------------------------------------------------------
+[2025-10-03 16:11:17] LARGE_REGION_WARNING: System region too large: 14853 bp
+  Strain: ECOR-46
+  System: KBCPMFPO_Dnd_ABCDEFGH_6
+  Files:
+    systems_tsv: /home/radoykov/projects/defense-system-clustering/data/E_coli-15-strains/ECOR-46/ECOR-46-defensefinder/ECOR-46_defense_finder_systems.tsv
+    genes_tsv: /home/radoykov/projects/defense-system-clustering/data/E_coli-15-strains/ECOR-46/ECOR-46-defensefinder/ECOR-46_defense_finder_genes.tsv
+    gff_file: /home/radoykov/projects/defense-system-clustering/data/E_coli-15-strains/ECOR-46/ECOR-46.gff
+    fasta_file: /home/radoykov/projects/defense-system-clustering/data/E_coli-15-strains/ECOR-46/ECOR-46.fa
+    system_id: KBCPMFPO_Dnd_ABCDEFGH_6
+--------------------------------------------------------------------------------
+[2025-10-03 16:11:18] LARGE_REGION_WARNING: System region too large: 10952 bp
+  Strain: BE
+  System: PGDIAIGA_RM_Type_IV_8
+  Files:
+    systems_tsv: /home/radoykov/projects/defense-system-clustering/data/E_coli-15-strains/BE/BE-defensefinder/BE_defense_finder_systems.tsv
+    genes_tsv: /home/radoykov/projects/defense-system-clustering/data/E_coli-15-strains/BE/BE-defensefinder/BE_defense_finder_genes.tsv
+    gff_file: /home/radoykov/projects/defense-system-clustering/data/E_coli-15-strains/BE/BE.gff
+    fasta_file: /home/radoykov/projects/defense-system-clustering/data/E_coli-15-strains/BE/BE.fa
+    system_id: PGDIAIGA_RM_Type_IV_8
+--------------------------------------------------------------------------------

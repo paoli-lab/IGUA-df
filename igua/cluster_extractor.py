@@ -5,9 +5,12 @@ import re
 import traceback
 import uuid
 from abc import ABC, abstractmethod
+import io
+import gzip
+import tarfile
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Dict, Iterable, List, Optional, TextIO, Tuple
+from typing import Dict, Iterable, List, Optional, TextIO, Tuple, Union, BinaryIO
 
 import polars as pl
 import rich.progress
@@ -15,6 +18,66 @@ from rich.console import Console
 
 
 _GZIP_MAGIC = b'\x1f\x8b'
+
+
+def _parse_tar_path(path: Path) -> Union[tuple[Path, str], tuple[None, None]]:
+    """Parse a path that might point inside a tar archive.
+    
+    Args:
+        path: Path that might contain a tar archive reference.
+        
+    Returns:
+        Tuple of (tar_path, member_path) if tar archive found, else (None, None).
+    """
+    path_str = str(path)
+    
+    for ext in ['.tar.gz', '.tar.bz2', '.tgz', '.tar']:
+        if ext in path_str:
+            parts = path_str.split(ext, 1)
+            tar_path = Path(parts[0] + ext)
+            if tar_path.exists():
+                member_path = parts[1].lstrip('/')
+                return tar_path, member_path
+    
+    return None, None
+
+
+def smart_open(path: Path, mode: str = 'rb') -> BinaryIO:
+    """Open a file, handling both regular files and files inside tar archives.
+    
+    Supports gzip compression for both regular files and tar members.
+    
+    Args:
+        path: Path to file (may be inside tar archive).
+        mode: File mode ('rb' or 'rt').
+        
+    Returns:
+        File-like object (binary mode).
+    """
+    tar_path, member_path = _parse_tar_path(path)
+    
+    if tar_path and member_path:
+        tf = tarfile.open(tar_path, 'r:*')
+        member = tf.extractfile(member_path)
+        if member is None:
+            raise FileNotFoundError(f"Member {member_path} not found in {tar_path}")
+        
+        original_close = member.close
+        def cleanup():
+            original_close()
+            tf.close()
+        member.close = cleanup
+        
+        reader = io.BufferedReader(member)
+        if reader.peek().startswith(_GZIP_MAGIC):
+            reader = gzip.GzipFile(mode="rb", fileobj=reader)  # type: ignore
+        
+        return reader  # type: ignore
+    else:
+        reader = io.BufferedReader(open(path, "rb"))
+        if reader.peek().startswith(_GZIP_MAGIC):
+            reader = gzip.GzipFile(mode="rb", fileobj=reader)  # type: ignore
+        return reader  # type: ignore
 
 @dataclass
 class SystemCoordinates:
@@ -87,8 +150,8 @@ class GFFIndex:
         ID, locus_tag, Name, gene, old_locus_tag, and protein_id attributes.
         Also creates prefixed variants (gene-, cds-) and underscore/tilde variants.
         """
-        with open(self.path, "r") as f:
-            for line in f:
+        with smart_open(self.path) as reader:
+            for line in io.TextIOWrapper(reader, encoding='utf-8'):
                 if line.startswith("#") or not line.strip():
                     continue
 
@@ -150,7 +213,6 @@ class GFFIndex:
         """
         return gene_id in self._index
 
-
 class FastaReader:
     """Streaming FASTA reader for memory-efficient sequence loading."""
 
@@ -166,13 +228,11 @@ class FastaReader:
         Yields:
             Tuple of (sequence_id, sequence_string).
         """
-        opener = gzip.open if file_path.suffix == '.gz' else open
-        
-        with opener(file_path, 'rt') as f:
+        with smart_open(file_path) as reader:
             name = None
             sequence = []
             
-            for line in f:
+            for line in io.TextIOWrapper(reader, encoding='utf-8'):
                 line = line.strip()
                 if not line:
                     continue
@@ -218,14 +278,12 @@ class ProteinIndex:
         if self._loaded:
             return
             
-        opener = gzip.open if self.path.suffix == '.gz' else open
-        
-        with opener(self.path, 'rt') as f:
+        with smart_open(self.path) as reader:
             seq_id = None
             full_header = None
             sequence = []
             
-            for line in f:
+            for line in io.TextIOWrapper(reader, encoding='utf-8'):
                 line = line.strip()
                 if not line:
                     continue
@@ -470,7 +528,7 @@ class GenomeContext:
                 (self.genomic_fasta, "genomic_fasta"),
                 (self.protein_fasta, "protein_fasta"),
             ]
-            if not path.exists()
+            if not path.exists() and "tar.gz" not in str(path)
         ]
 
     def __repr__(self):
