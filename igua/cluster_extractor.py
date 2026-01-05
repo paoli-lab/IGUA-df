@@ -1,23 +1,59 @@
 import gc
 import gzip
+import io
 import pickle
 import re
+import tarfile
 import traceback
 import uuid
 from abc import ABC, abstractmethod
-import io
-import gzip
-import tarfile
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Dict, Iterable, List, Optional, TextIO, Tuple, Union, BinaryIO
+from typing import BinaryIO, Dict, Iterable, List, Optional, TextIO, Tuple, Union
 
 import polars as pl
 import rich.progress
 from rich.console import Console
 
 
+
 _GZIP_MAGIC = b'\x1f\x8b'
+
+
+class TarCache:
+    """Cache for extracted tar members to avoid repeated extraction."""
+    
+    def __init__(self):
+        self._cache: Dict[str, bytes] = {}
+        self._tar_handles: Dict[Path, tarfile.TarFile] = {}
+    
+    def get_member(self, tar_path: Path, member_path: str) -> io.BytesIO:
+        """Get tar member, using cache if available."""
+        cache_key = f"{tar_path}::{member_path}"
+        
+        if cache_key not in self._cache:
+            if tar_path not in self._tar_handles:
+                self._tar_handles[tar_path] = tarfile.open(tar_path, 'r:*')
+            
+            tf = self._tar_handles[tar_path]
+            member = tf.extractfile(member_path)
+            if member is None:
+                raise FileNotFoundError(f"Member {member_path} not found in {tar_path}")
+            
+            self._cache[cache_key] = member.read()
+            member.close()
+        
+        return io.BytesIO(self._cache[cache_key])
+    
+    def cleanup(self):
+        """Close all tar handles and clear cache."""
+        for tf in self._tar_handles.values():
+            tf.close()
+        self._tar_handles.clear()
+        self._cache.clear()
+
+
+_tar_cache = TarCache()
 
 
 def _parse_tar_path(path: Path) -> Union[tuple[Path, str], tuple[None, None]]:
@@ -45,6 +81,7 @@ def _parse_tar_path(path: Path) -> Union[tuple[Path, str], tuple[None, None]]:
 def smart_open(path: Path, mode: str = 'rb') -> BinaryIO:
     """Open a file, handling both regular files and files inside tar archives.
     
+    Uses caching for tar members to avoid repeated extraction.
     Supports gzip compression for both regular files and tar members.
     
     Args:
@@ -57,18 +94,9 @@ def smart_open(path: Path, mode: str = 'rb') -> BinaryIO:
     tar_path, member_path = _parse_tar_path(path)
     
     if tar_path and member_path:
-        tf = tarfile.open(tar_path, 'r:*')
-        member = tf.extractfile(member_path)
-        if member is None:
-            raise FileNotFoundError(f"Member {member_path} not found in {tar_path}")
+        member_data = _tar_cache.get_member(tar_path, member_path)
+        reader = io.BufferedReader(member_data)
         
-        original_close = member.close
-        def cleanup():
-            original_close()
-            tf.close()
-        member.close = cleanup
-        
-        reader = io.BufferedReader(member)
         if reader.peek().startswith(_GZIP_MAGIC):
             reader = gzip.GzipFile(mode="rb", fileobj=reader)  # type: ignore
         
@@ -78,6 +106,7 @@ def smart_open(path: Path, mode: str = 'rb') -> BinaryIO:
         if reader.peek().startswith(_GZIP_MAGIC):
             reader = gzip.GzipFile(mode="rb", fileobj=reader)  # type: ignore
         return reader  # type: ignore
+
 
 @dataclass
 class SystemCoordinates:
@@ -212,6 +241,7 @@ class GFFIndex:
             True if gene ID exists, False otherwise.
         """
         return gene_id in self._index
+
 
 class FastaReader:
     """Streaming FASTA reader for memory-efficient sequence loading."""
@@ -839,6 +869,8 @@ class GenomeResources:
         self._protein_idx = None
         self._gff_db = None
         self._coordinates_cache = None
+        
+        _tar_cache.cleanup()
 
 
 class SequenceExtractor:
@@ -1281,6 +1313,9 @@ class GeneClusterExtractor:
             )
             traceback.print_exc()
             return {}
+        finally:
+            _tar_cache.cleanup()
+            gc.collect()
 
     def _log_missing_files(self, context: GenomeContext):
         """Log missing files for a context.
