@@ -46,6 +46,35 @@ to transfer annotations to the GCFs.
 
 ## 🔧 Installing
 
+### Bioconda
+
+IGUA and all of its dependencies are available via [Bioconda](https://anaconda.org/channels/bioconda/packages/igua/overview) and can be installed using e.g., `conda` or `pixi`:
+
+1. First, [set up Bioconda with Pixi or Conda.](https://bioconda.github.io/)
+
+2. Then, install IGUA using the appropriate method:
+
+With `conda`:
+```console
+$ conda install igua
+```
+
+With `pixi`:
+```console
+$ pixi add igua
+```
+
+### Apptainer, Docker, and Singularity
+
+IGUA (and all of its dependencies) can be run using e.g., Docker, Apptainer, and Singularity, using images available [here](https://quay.io/repository/biocontainers/igua?tab=tags&tag=latest).
+
+An example using Apptainer (using IGUA v0.1.0):
+```
+apptainer pull docker://quay.io/biocontainers/igua:0.1.0--py39h5b94c0b_0
+```
+
+### pip
+
 IGUA can be downloaded directly from PyPI, which hosts pre-compiled 
 distributions for Linux, MacOS and Windows. Simply install with `pip`:
 
@@ -54,7 +83,6 @@ $ pip install igua
 ```
 
 **Note that you will need to install MMseqs2 yourself through other means.**
-
 
 ## 💡 Running
 
