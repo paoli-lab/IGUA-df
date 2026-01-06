@@ -1,14 +1,13 @@
-from abc import ABC, abstractmethod
 import gc
-from enum import Enum
-import re
-import uuid
-from dataclasses import dataclass, asdict
-from pathlib import Path
-from typing import Dict, Iterable, List, Optional, TextIO, Tuple
 import gzip
 import pickle
+import re
 import traceback
+import uuid
+from abc import ABC, abstractmethod
+from dataclasses import asdict, dataclass
+from pathlib import Path
+from typing import Dict, Iterable, List, Optional, TextIO, Tuple
 
 import polars as pl
 import rich.progress
@@ -1029,11 +1028,9 @@ class ClusterMetadataCache:
                 batches.append(batch)
                 batch = []
         
-        # Add remaining genomes
         if batch:
             batches.append(batch)
         
-        # Use gzip compression for very large datasets
         use_compression = total > 10000
         cache_path = self.cache_path.with_suffix('.pkl.gz') if use_compression else self.cache_path
         
@@ -1045,7 +1042,6 @@ class ClusterMetadataCache:
                 protocol=pickle.HIGHEST_PROTOCOL
             )
         
-        # Update cache path if compression was used
         if use_compression:
             self.cache_path = cache_path
     
@@ -1066,7 +1062,6 @@ class ClusterMetadataCache:
         Yields:
             Individual genome metadata dictionaries.
         """
-        # Check for compressed version
         compressed_path = self.cache_path.with_suffix('.pkl.gz')
         use_compression = compressed_path.exists()
         cache_path = compressed_path if use_compression else self.cache_path
@@ -1075,16 +1070,13 @@ class ClusterMetadataCache:
         with open_fn(cache_path, 'rb') as f:
             data = pickle.load(f)
             
-            # Handle both new batched format and legacy format
             if isinstance(data.get("genomes"), list) and data.get("batch_size"):
-                # New batched format
                 for batch in data["genomes"]:
                     for genome in batch:
                         yield genome
-                    del batch  # Free memory after each batch
+                    del batch 
                     gc.collect()
             else:
-                # Legacy format - load all at once
                 for genome in data.get("genomes", []):
                     yield genome
     

@@ -1,12 +1,8 @@
 import abc
-import io
-import json
-import typing
-import pathlib
-import tempfile
 import gzip
-import warnings
-import gc
+import io
+import pathlib
+import typing
 from io import StringIO
 
 import Bio.Seq
@@ -15,14 +11,13 @@ import pandas as pd
 import polars as pl
 import rich.progress
 
-from .mmseqs import MMSeqs
-from .mmseqs import Database
 from .cluster_extractor import (
     ClusterDataAdapter,
-    GenomeContext,
-    GeneClusterExtractor,
     ClusterMetadataCache,
+    GeneClusterExtractor,
+    GenomeContext,
 )
+from .mmseqs import Database, MMSeqs
 
 
 _GZIP_MAGIC = b'\x1f\x8b'
@@ -361,7 +356,6 @@ class FastaGFFDataset(BaseDataset):
         """Extract proteins using cached metadata with streaming."""
         cache = ClusterMetadataCache(self._metadata_cache_path)
         
-        # Count genomes for progress tracking
         genome_count = sum(1 for _ in cache.iter_genomes())
         
         protein_sizes = {}
