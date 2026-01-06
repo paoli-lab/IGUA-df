@@ -282,59 +282,62 @@ class FastaGFFDataset(BaseDataset):
     ) -> pd.DataFrame:
         """Extract sequences and cache all metadata for protein extraction."""
         results = []
-        all_metadata = []
         
-        with open(output, "w") as dst:
+        def metadata_generator():
+            """Generator that yields metadata for each genome."""
+            genome_count = 0
             task = progress.add_task(
                 f"[bold blue]{'Processing':>9}[/] gene clusters", 
                 total=len(df)
             )
             
-            for row in df.iter_rows(named=True):
-                genome_id = row.get("genome_id") or f"genome_{len(all_metadata):07}"
-                progress.update(
-                    task, 
-                    description=f"[bold blue]{'Processing':>9}[/] strain: [bold cyan]{genome_id}"
-                )
-                
-                context = self._create_genome_context(row, genome_id)
-                
-                if not context.is_valid():
-                    progress.console.print(
-                        f"[bold yellow]{'Missing':>12}[/] files for {genome_id}"
+            with open(output, "w") as dst:
+                for row in df.iter_rows(named=True):
+                    genome_id = row.get("genome_id") or f"genome_{genome_count:07}"
+                    genome_count += 1
+                    progress.update(
+                        task, 
+                        description=f"[bold blue]{'Processing':>9}[/] strain: [bold cyan]{genome_id}"
                     )
+                    
+                    context = self._create_genome_context(row, genome_id)
+                    
+                    if not context.is_valid():
+                        progress.console.print(
+                            f"[bold yellow]{'Missing':>12}[/] files for {genome_id}"
+                        )
+                        progress.update(task, advance=1)
+                        continue
+                    
+                    try:
+                        coordinates = extractor.extract_systems(context, dst)
+                        
+                        for coord in coordinates:
+                            if coord.valid:
+                                results.append((
+                                    coord.sys_id, 
+                                    coord.end_coord - coord.start_coord + 1,
+                                    coord.fasta_file
+                                ))
+                        
+                        if coordinates:
+                            yield {
+                                "genome_id": genome_id,
+                                "protein_fasta": str(context.protein_fasta),
+                                "coordinates": [c.to_dict() for c in coordinates]
+                            }
+                        
+                    except Exception as e:
+                        progress.console.print(
+                            f"[bold red]{'Error':>12}[/] processing {genome_id}: {e}"
+                        )
+                    
                     progress.update(task, advance=1)
-                    continue
-                
-                try:
-                    coordinates = extractor.extract_systems(context, dst)
-                    
-                    for coord in coordinates:
-                        if coord.valid:
-                            results.append((
-                                coord.sys_id, 
-                                coord.end_coord - coord.start_coord + 1,
-                                coord.fasta_file
-                            ))
-                    
-                    if coordinates:
-                        all_metadata.append({
-                            "genome_id": genome_id,
-                            "protein_fasta": str(context.protein_fasta),
-                            "coordinates": [c.to_dict() for c in coordinates]
-                        })
-                    
-                except Exception as e:
-                    progress.console.print(
-                        f"[bold red]{'Error':>12}[/] processing {genome_id}: {e}"
-                    )
-                
-                progress.update(task, advance=1)
             
             progress.remove_task(task)
         
         cache = ClusterMetadataCache(self._metadata_cache_path)
-        cache.save({"genomes": all_metadata})
+        cache.save_streaming(metadata_generator(), len(df))
         
         progress.console.print(
             f"[bold green]{'Extracted':>12}[/] {len(results):,} gene clusters from {len(df):,} strains/genomes"
@@ -355,20 +358,21 @@ class FastaGFFDataset(BaseDataset):
         extractor: GeneClusterExtractor,
         representatives: typing.Container[str],
     ) -> typing.Dict[str, int]:
-        """Extract proteins using cached metadata."""
+        """Extract proteins using cached metadata with streaming."""
         cache = ClusterMetadataCache(self._metadata_cache_path)
-        cached_data = cache.load()
         
-        all_genomes = cached_data["genomes"]
+        # Count genomes for progress tracking
+        genome_count = sum(1 for _ in cache.iter_genomes())
+        
         protein_sizes = {}
         
         with open(output, "w") as dst:
             task = progress.add_task(
                 f"[bold blue]{'Processing':>9}[/] protein sequences",
-                total=len(all_genomes)
+                total=genome_count
             )
             
-            for genome_metadata in all_genomes:
+            for genome_metadata in cache.iter_genomes():
                 genome_id = genome_metadata["genome_id"]
                 progress.update(
                     task,

@@ -191,14 +191,16 @@ class FastaReader:
 
 
 class ProteinIndex:
-    """In-memory protein sequence index for fast lookup.
+    """Lazy-loading protein sequence index for efficient lookup.
+    
+    Only loads proteins as needed, suitable for large FASTA files.
     
     Attributes:
         path: Path to the protein FASTA file.
     """
     
     def __init__(self, protein_fasta: Path):
-        """Initialize protein index.
+        """Initialize protein index without loading sequences.
         
         Args:
             protein_fasta: Path to protein FASTA file.
@@ -206,13 +208,17 @@ class ProteinIndex:
         self.path = protein_fasta
         self._sequences: Dict[str, str] = {}
         self._headers: Dict[str, str] = {}
-        self._build_index()
+        self._loaded = False
     
-    def _build_index(self):
-        """Build protein sequence index from FASTA file.
+    def _ensure_loaded(self, gene_ids: Optional[set] = None):
+        """Load protein sequences on demand.
         
-        Stores both sequences and full headers for fallback lookups.
+        Args:
+            gene_ids: Optional set of gene IDs to load. If None, loads all.
         """
+        if self._loaded:
+            return
+            
         opener = gzip.open if self.path.suffix == '.gz' else open
         
         with opener(self.path, 'rt') as f:
@@ -227,18 +233,31 @@ class ProteinIndex:
                     
                 if line.startswith('>'):
                     if seq_id is not None:
-                        self._sequences[seq_id] = ''.join(sequence)
-                        self._headers[seq_id] = full_header
+                        if gene_ids is None or seq_id in gene_ids:
+                            self._sequences[seq_id] = ''.join(sequence)
+                            self._headers[seq_id] = full_header
                     
                     full_header = line[1:]
                     seq_id = full_header.split()[0]
                     sequence = []
                 else:
-                    sequence.append(line)
+                    if gene_ids is None or (seq_id and seq_id in gene_ids):
+                        sequence.append(line)
             
             if seq_id is not None:
-                self._sequences[seq_id] = ''.join(sequence)
-                self._headers[seq_id] = full_header
+                if gene_ids is None or seq_id in gene_ids:
+                    self._sequences[seq_id] = ''.join(sequence)
+                    self._headers[seq_id] = full_header
+        
+        self._loaded = True
+    
+    def load_subset(self, gene_ids: set):
+        """Pre-load only specific proteins by ID.
+        
+        Args:
+            gene_ids: Set of gene IDs to load.
+        """
+        self._ensure_loaded(gene_ids)
     
     def get(self, protein_id: str) -> Optional[str]:
         """Get protein sequence by ID.
@@ -249,6 +268,8 @@ class ProteinIndex:
         Returns:
             Protein sequence if found, None otherwise.
         """
+        if not self._loaded:
+            self._ensure_loaded()
         return self._sequences.get(protein_id)
     
     def get_header(self, protein_id: str) -> Optional[str]:
@@ -260,6 +281,8 @@ class ProteinIndex:
         Returns:
             Full header string if found, None otherwise.
         """
+        if not self._loaded:
+            self._ensure_loaded()
         return self._headers.get(protein_id)
     
     def keys(self):
@@ -268,6 +291,8 @@ class ProteinIndex:
         Returns:
             Dictionary keys view of protein IDs.
         """
+        if not self._loaded:
+            self._ensure_loaded()
         return self._sequences.keys()
     
     def __contains__(self, protein_id: str) -> bool:
@@ -279,7 +304,10 @@ class ProteinIndex:
         Returns:
             True if protein ID exists, False otherwise.
         """
+        if not self._loaded:
+            self._ensure_loaded()
         return protein_id in self._sequences
+
 
 class ClusterDataAdapter(ABC):
     """Adapter interface for different cluster data formats.
@@ -336,7 +364,6 @@ class DefenseFinderAdapter(ClusterDataAdapter):
         df = pl.read_csv(tsv_path, separator="\t")
         original_count = len(df)
         
-        # DefenseFinder-specific: activity filtering
         if self.activity_filter.lower() != "all":
             if "activity" in df.columns:
                 df = df.filter(
@@ -390,6 +417,7 @@ class GenericClusterAdapter(ClusterDataAdapter):
     
     def get_column_mapping(self) -> Dict[str, str]:
         return self._column_mapping
+
 
 class GenomeContext:
     """Immutable data container for genome/strain file paths and metadata.
@@ -773,8 +801,6 @@ class SequenceExtractor:
         """
         self.console = console
         self.verbose = verbose
-        self._protein_lookup_cache: Optional[Dict[str, str]] = None
-        self._cached_protein_fasta: Optional[Path] = None
 
     def extract_genomic_sequences(
         self,
@@ -864,17 +890,19 @@ class SequenceExtractor:
         Args:
             system_genes: Dict mapping sys_id to list of gene IDs.
             protein_idx: Protein sequence index.
-            protein_fasta_path: Path to protein FASTA file (for cache tracking).
+            protein_fasta_path: Path to protein FASTA file (for logging).
             output_file: Output file handle for writing sequences.
             
         Returns:
             Dict mapping protein_id to sequence length.
         """
-        if self._cached_protein_fasta != protein_fasta_path:
-            self._protein_lookup_cache = None
-            self._cached_protein_fasta = protein_fasta_path
+        all_gene_ids = set()
+        for gene_list in system_genes.values():
+            all_gene_ids.update(gene_list)
         
-        total_genes = sum(len(genes) for genes in system_genes.values())
+        protein_idx.load_subset(all_gene_ids)
+        
+        total_genes = len(all_gene_ids)
         self.console.print(
             f"[bold blue]{'Processing':>12}[/] {total_genes} proteins from {len(system_genes)} clusters"
         )
@@ -911,10 +939,10 @@ class SequenceExtractor:
     def _fallback_protein_search(
         self, gene_id: str, protein_idx: ProteinIndex
     ) -> Optional[str]:
-        """Fallback search using header attributes.
+        """Fallback search using header attributes by scanning the file.
         
         Searches protein headers for gene_id in various attribute fields
-        (locus_tag, ID, Name, gene).
+        (locus_tag, ID, Name, gene) without loading all proteins into memory.
         
         Args:
             gene_id: Gene identifier to search for.
@@ -923,44 +951,61 @@ class SequenceExtractor:
         Returns:
             Protein sequence if found, None otherwise.
         """
-        if self._protein_lookup_cache is None:
-            self._protein_lookup_cache = {
-                rec_id: protein_idx.get_header(rec_id) for rec_id in protein_idx.keys()
-            }
-
-        for attr in ["locus_tag", "ID", "Name", "gene"]:
-            for rec_id, header in self._protein_lookup_cache.items():
-                if header and re.search(rf"\[{attr}=({re.escape(gene_id)})\]", header):
-                    return protein_idx.get(rec_id)
-
+        opener = gzip.open if protein_idx.path.suffix == '.gz' else open
+        
+        with opener(protein_idx.path, 'rt') as f:
+            seq_id = None
+            sequence = []
+            full_header = None
+            
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                    
+                if line.startswith('>'):
+                    if seq_id and full_header:
+                        for attr in ["locus_tag", "ID", "Name", "gene"]:
+                            if re.search(rf"\[{attr}=({re.escape(gene_id)})\]", full_header):
+                                return ''.join(sequence)
+                    
+                    full_header = line[1:]
+                    seq_id = full_header.split()[0]
+                    sequence = []
+                else:
+                    sequence.append(line)
+            
+            if seq_id and full_header:
+                for attr in ["locus_tag", "ID", "Name", "gene"]:
+                    if re.search(rf"\[{attr}=({re.escape(gene_id)})\]", full_header):
+                        return ''.join(sequence)
+        
         return None
-
-    def cleanup(self):
-        """Clean up extractor's internal caches."""
-        self._protein_lookup_cache = None
-        self._cached_protein_fasta = None
 
 
 class ClusterMetadataCache:
     """Manages caching of cluster metadata to avoid redundant processing.
     
-    Uses pickle format for fast serialization/deserialization.
+    Uses batched pickle format for memory-efficient serialization/deserialization.
     
     Attributes:
         cache_path: Path to cache file.
+        batch_size: Number of genomes per batch (default 500).
     """
     
-    def __init__(self, cache_path: Path):
+    def __init__(self, cache_path: Path, batch_size: int = 500):
         """Initialize metadata cache.
         
         Args:
             cache_path: Path to cache file.
+            batch_size: Number of genomes to batch together.
         """
         self.cache_path = cache_path
+        self.batch_size = batch_size
         self._metadata: Optional[Dict] = None
     
     def save(self, metadata: Dict) -> None:
-        """Save metadata to pickle file.
+        """Save metadata to pickle file (legacy method for compatibility).
         
         Args:
             metadata: Dictionary containing cluster metadata.
@@ -968,8 +1013,44 @@ class ClusterMetadataCache:
         with open(self.cache_path, 'wb') as f:
             pickle.dump(metadata, f, protocol=pickle.HIGHEST_PROTOCOL)
     
+    def save_streaming(self, genomes_iterator, total: int) -> None:
+        """Save genomes in batches to reduce memory usage.
+        
+        Args:
+            genomes_iterator: Iterator yielding genome metadata dictionaries.
+            total: Total number of genomes (for compression decision).
+        """
+        batches = []
+        batch = []
+        
+        for genome in genomes_iterator:
+            batch.append(genome)
+            if len(batch) >= self.batch_size:
+                batches.append(batch)
+                batch = []
+        
+        # Add remaining genomes
+        if batch:
+            batches.append(batch)
+        
+        # Use gzip compression for very large datasets
+        use_compression = total > 10000
+        cache_path = self.cache_path.with_suffix('.pkl.gz') if use_compression else self.cache_path
+        
+        open_fn = gzip.open if use_compression else open
+        with open_fn(cache_path, 'wb') as f:
+            pickle.dump(
+                {"genomes": batches, "batch_size": self.batch_size, "compressed": use_compression}, 
+                f, 
+                protocol=pickle.HIGHEST_PROTOCOL
+            )
+        
+        # Update cache path if compression was used
+        if use_compression:
+            self.cache_path = cache_path
+    
     def load(self) -> Dict:
-        """Load metadata from pickle file.
+        """Load metadata from pickle file (legacy format).
         
         Returns:
             Dictionary containing cluster metadata.
@@ -979,20 +1060,50 @@ class ClusterMetadataCache:
                 self._metadata = pickle.load(f)
         return self._metadata
     
+    def iter_genomes(self):
+        """Stream genomes batch-by-batch without loading all into memory.
+        
+        Yields:
+            Individual genome metadata dictionaries.
+        """
+        # Check for compressed version
+        compressed_path = self.cache_path.with_suffix('.pkl.gz')
+        use_compression = compressed_path.exists()
+        cache_path = compressed_path if use_compression else self.cache_path
+        
+        open_fn = gzip.open if use_compression else open
+        with open_fn(cache_path, 'rb') as f:
+            data = pickle.load(f)
+            
+            # Handle both new batched format and legacy format
+            if isinstance(data.get("genomes"), list) and data.get("batch_size"):
+                # New batched format
+                for batch in data["genomes"]:
+                    for genome in batch:
+                        yield genome
+                    del batch  # Free memory after each batch
+                    gc.collect()
+            else:
+                # Legacy format - load all at once
+                for genome in data.get("genomes", []):
+                    yield genome
+    
     def exists(self) -> bool:
         """Check if cache file exists.
         
         Returns:
             True if cache file exists, False otherwise.
         """
-        return self.cache_path.exists()
+        return self.cache_path.exists() or self.cache_path.with_suffix('.pkl.gz').exists()
     
     def clear(self) -> None:
         """Clear cache file and memory."""
         if self.cache_path.exists():
             self.cache_path.unlink()
+        compressed_path = self.cache_path.with_suffix('.pkl.gz')
+        if compressed_path.exists():
+            compressed_path.unlink()
         self._metadata = None
-
 
 class GeneClusterExtractor:
     """High-level orchestrator for gene cluster extraction pipeline.
