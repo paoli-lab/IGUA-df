@@ -1,25 +1,23 @@
 import abc
-import io
-import typing
-import pathlib
-import tempfile
 import gzip
-import warnings
-import gc
+import io
+import pathlib
+import typing
+from io import StringIO
 
 import Bio.Seq
 import gb_io
-import pandas
+import pandas as pd
+import polars as pl
 import rich.progress
 
-from .mmseqs import MMSeqs
-from .mmseqs import Database
-from .defense_extractor import (
+from .cluster_extractor import (
+    ClusterDataAdapter,
+    ClusterMetadataCache,
+    GeneClusterExtractor,
     GenomeContext,
-    GenomeResources,
-    DefenseSystem,
-    DefenseSystemExtractor
 )
+from .mmseqs import Database, MMSeqs
 
 
 _GZIP_MAGIC = b'\x1f\x8b'
@@ -37,7 +35,7 @@ class BaseDataset(abc.ABC):
         progress: rich.progress.Progress,
         inputs: typing.List[pathlib.Path],
         output: pathlib.Path,
-        ) -> pandas.DataFrame:
+        ) -> pd.DataFrame:
         pass
     
     @abc.abstractmethod
@@ -68,10 +66,8 @@ class BaseDataset(abc.ABC):
         output_db_path: pathlib.Path
     ) -> Database:
         """Default implementation creates a temporary file then a database"""
-        # Create temporary FASTA file
         tmp_fasta = output_db_path.with_suffix(".fna")
         self.extract_sequences(progress, inputs, tmp_fasta)
-        # Create database from temporary file
         return Database.create(mmseqs, tmp_fasta)
     
     def create_protein_database(
@@ -83,10 +79,8 @@ class BaseDataset(abc.ABC):
         output_db_path: pathlib.Path
     ) -> typing.Tuple[Database, typing.Dict[str, int]]:
         """Default implementation creates a temporary file then a database"""
-        # Create temporary FASTA file
         tmp_fasta = output_db_path.with_suffix(".faa")
         protein_sizes = self.extract_proteins(progress, inputs, tmp_fasta, representatives)
-        # Create database from temporary file
         return Database.create(mmseqs, tmp_fasta), protein_sizes
 
 
@@ -101,14 +95,14 @@ class GenBankDataset(BaseDataset):
         progress: rich.progress.Progress,
         inputs: typing.List[pathlib.Path],
         output: pathlib.Path,
-    ) -> pandas.DataFrame:
+    ) -> pd.DataFrame:
         """Extracts nucleotide sequences from GenBank files.
         Args:
             progress (rich.progress.Progress): Progress bar for tracking progress.
             inputs (typing.List[pathlib.Path]): List of input GenBank files.
             output (pathlib.Path): Output file path for the extracted sequences. 
         Returns:
-            pandas.DataFrame: DataFrame containing the extracted sequences.
+            pd.DataFrame: DataFrame containing the extracted sequences.
         """
         data = []
         done = set()
@@ -133,7 +127,7 @@ class GenBankDataset(BaseDataset):
             progress.console.print(
                 f"[bold yellow]{'Skipped':>12}[/] {n_duplicate} clusters with duplicate identifiers"
             )
-        return pandas.DataFrame(
+        return pd.DataFrame(
             data=data,
             columns=["cluster_id", "cluster_length", "filename"]
         ).set_index("cluster_id")
@@ -179,114 +173,66 @@ class GenBankDataset(BaseDataset):
                                     protein_sizes[protein_id] = len(translation)
                 progress.remove_task(task)
         progress.console.print(
-            f"[bold green]{'Extracted':>12}[/] {len(protein_sizes)} proteins from {len(representatives)} nucleotide representative"
+            f"[bold green]{'Extracted':>12}[/] {len(protein_sizes):,} proteins from {len(representatives):,} nucleotide representative"
         )
         return protein_sizes
 
 
-class DefenseFinderDataset(BaseDataset):
-    """DefenseFinder dataset class.
-    This class is used to extract nucleotide and protein sequences from DefenseFinder output files.
+class FastaGFFDataset(BaseDataset):
+    """FastaGFF dataset class.
+    
+    Uses adapters to handle different cluster data formats.
     """
-    def __init__(self) -> None:
-        """Initialize the DefenseFinderDataset class."""
-        self.defense_metadata: typing.Optional[typing.Union[pathlib.Path, str]] = None
+    
+    def __init__(self, adapter: ClusterDataAdapter) -> None:
+        """Initialize the FastaGFFDataset class.
+        
+        Args:
+            adapter: Adapter for handling format-specific logic.
+        """
+        self.cluster_metadata: typing.Optional[typing.Union[pathlib.Path, str]] = None
         self.verbose: bool = False
-        self.activity_filter: str = "defense"
+        self.adapter = adapter
         self.gff_cache_dir: typing.Optional[pathlib.Path] = None
+        self._metadata_cache_path: typing.Optional[pathlib.Path] = None
+
+    def _create_genome_context(self, row: typing.Dict, genome_id: str) -> GenomeContext:
+        """Create GenomeContext from a dataframe row."""
+        return GenomeContext(
+            genome_id=genome_id,
+            systems_tsv=pathlib.Path(row["systems_tsv"]),
+            genes_tsv=pathlib.Path(row["genes_tsv"]),
+            gff_file=pathlib.Path(row["gff_file"]),
+            genomic_fasta=pathlib.Path(row["genome_fasta_file"]),
+            protein_fasta=pathlib.Path(row["protein_fasta_file"]),
+            adapter=self.adapter,
+        )
+
 
     def extract_sequences(
         self,
         progress: rich.progress.Progress,
         inputs: typing.List[pathlib.Path],
         output: pathlib.Path,
-    ) -> pandas.DataFrame:
-        """Extracts nucleotide sequences from defense systems."""
-        
-        extractor = DefenseSystemExtractor(progress=progress, verbose=self.verbose)
-        
-        progress.console.print(f"[bold blue]{'Using':>12}[/] defense metadata file: [magenta]{self.defense_metadata}[/]")
+    ) -> pd.DataFrame:
+        """Extracts nucleotide sequences from gene clusters and caches metadata."""
+        extractor = GeneClusterExtractor(progress=progress, verbose=self.verbose)
+        progress.console.print(
+            f"[bold blue]{'Using':>12}[/] cluster metadata file: [magenta]{self.cluster_metadata}[/]"
+        )
         
         try:
-            df = pandas.read_csv(self.defense_metadata, sep="\t")
-            return self._process_defense_files_from_tsv(progress, df, output, extractor)
+            df = pl.read_csv(self.cluster_metadata, separator="\t")
+            
+            self._metadata_cache_path = output.parent / f".{output.stem}_metadata.json"
+            
+            return self._extract_and_cache_metadata(progress, df, output, extractor)
+            
         except Exception as e:
-            progress.console.print(f"[bold red]{'Error':>12}[/] reading defense metadata: {e}")
-            return pandas.DataFrame(columns=["cluster_id", "cluster_length", "filename"]).set_index("cluster_id")
-
-    def _process_defense_files_from_tsv(
-        self,
-        progress: rich.progress.Progress,
-        df: pandas.DataFrame,
-        output: pathlib.Path,
-        extractor: DefenseSystemExtractor
-    ) -> pandas.DataFrame:
-        """Process defense systems from TSV file with file paths."""
-        
-        chunk_size = 5
-        all_data = []
-
-        with open(output, "w") as dst:
-            task = progress.add_task(f"[bold blue]{'Processing':>9}[/] defense systems", total=len(df))
-
-            for chunk_start in range(0, len(df), chunk_size):
-                chunk_end = min(chunk_start + chunk_size, len(df))
-                df_chunk = df.iloc[chunk_start:chunk_end]
-
-                chunk_data = []
-                for _, row in df_chunk.iterrows():
-                    genome_id = row.get("genome_id", None)
-                    progress.update(task, description=f"[bold blue]{'Processing':>9}[/] strain: [bold cyan]{genome_id}")
-
-                    context = GenomeContext(
-                        genome_id=genome_id,
-                        systems_tsv=pathlib.Path(row["systems_tsv"]),
-                        genes_tsv=pathlib.Path(row["genes_tsv"]),
-                        gff_file=pathlib.Path(row["gff_file"]),
-                        genomic_fasta=pathlib.Path(row["genome_fasta_file"]),
-                        protein_fasta=pathlib.Path(row["protein_fasta_file"]),
-                        activity_filter=self.activity_filter,
-                    )
-                    
-                    if not context.is_valid():
-                        progress.console.print(
-                            f"[bold yellow]{'Missing':>12}[/] files for {genome_id}: {', '.join(context.missing_files)}"
-                        )
-                        progress.update(task, advance=1)
-                        continue
-
-                    # extract genomic sequences for defense systems
-                    try:
-                        systems = extractor.extract_systems(
-                            context=context,
-                            output_file=dst,
-                        )
-                        chunk_data.extend(systems)
-                        del systems
-                    except Exception as e:
-                        progress.console.print(f"[bold red]{'Error':>12}[/] processing {genome_id}: {e}")
-
-                    progress.update(task, advance=1)
-                
-                all_data.extend(chunk_data)
-                del chunk_data, df_chunk
-                gc.collect()
-
-            progress.remove_task(task)
-
-        progress.console.print(
-            f"[bold green]{'Extracted':>12}[/] {len(all_data)} systems in total from {df.shape[0]} strains/genomes"
-        )
-
-        result_df = pandas.DataFrame(
-            data=all_data,
-            columns=["cluster_id", "cluster_length", "filename"]
-        ).set_index("cluster_id")
-
-        del all_data
-        gc.collect()
-
-        return result_df
+            progress.console.print(f"[bold red]{'Error':>12}[/] reading cluster metadata: {e}")
+            return pd.DataFrame(
+                columns=["cluster_id", "cluster_length", "filename"]
+            ).set_index("cluster_id")
 
     def extract_proteins(
         self,
@@ -295,111 +241,231 @@ class DefenseFinderDataset(BaseDataset):
         output: pathlib.Path,
         representatives: typing.Container[str]
     ) -> typing.Dict[str, int]:
-        """Extracts protein sequences from defense systems."""
+        """Extracts protein sequences using cached metadata."""
+        extractor = GeneClusterExtractor(progress=progress, verbose=self.verbose)
         
-        extractor = DefenseSystemExtractor(progress=progress, verbose=self.verbose)
-
-        progress.console.print(f"[bold blue]{'Using':>12}[/] defense metadata file: [magenta]{self.defense_metadata}[/]")
+        if self._metadata_cache_path and self._metadata_cache_path.exists():
+            progress.console.print(
+                f"[bold blue]{'Using':>12}[/] cached metadata from sequence extraction"
+            )
+            return self._extract_proteins_from_cache(
+                progress, output, extractor, representatives
+            )
+        
+        progress.console.print(
+            f"[bold yellow]{'Warning':>12}[/] No cached metadata found, reading cluster metadata again"
+        )
+        progress.console.print(
+            f"[bold blue]{'Using':>12}[/] cluster metadata file: [magenta]{self.cluster_metadata}[/]"
+        )
 
         try:
-            df = pandas.read_csv(self.defense_metadata, sep="\t")
-            return self._extract_proteins_from_tsv(progress, df, output, representatives, extractor)
+            df = pl.read_csv(self.cluster_metadata, separator="\t")
+            return self._extract_proteins_direct(
+                progress, df, output, extractor, representatives
+            )
         except Exception as e:
-            progress.console.print(f"[bold red]{'Error':>12}[/] reading defense metadata: {e}")
+            progress.console.print(f"[bold red]{'Error':>12}[/] reading cluster metadata: {e}")
             return {}
 
-    def _extract_proteins_from_tsv(
+    def _extract_and_cache_metadata(
         self,
         progress: rich.progress.Progress,
-        df: pandas.DataFrame,
+        df: pl.DataFrame,
         output: pathlib.Path,
+        extractor: GeneClusterExtractor,
+    ) -> pd.DataFrame:
+        """Extract sequences and cache all metadata for protein extraction."""
+        results = []
+        
+        def metadata_generator():
+            """Generator that yields metadata for each genome."""
+            genome_count = 0
+            task = progress.add_task(
+                f"[bold blue]{'Processing':>9}[/] gene clusters", 
+                total=len(df)
+            )
+            
+            with open(output, "w") as dst:
+                for row in df.iter_rows(named=True):
+                    genome_id = row.get("genome_id") or f"genome_{genome_count:07}"
+                    genome_count += 1
+                    progress.update(
+                        task, 
+                        description=f"[bold blue]{'Processing':>9}[/] strain: [bold cyan]{genome_id}"
+                    )
+                    
+                    context = self._create_genome_context(row, genome_id)
+                    
+                    if not context.is_valid():
+                        progress.console.print(
+                            f"[bold yellow]{'Missing':>12}[/] files for {genome_id}"
+                        )
+                        progress.update(task, advance=1)
+                        continue
+                    
+                    try:
+                        coordinates = extractor.extract_systems(context, dst)
+                        
+                        for coord in coordinates:
+                            if coord.valid:
+                                results.append((
+                                    coord.sys_id, 
+                                    coord.end_coord - coord.start_coord + 1,
+                                    coord.fasta_file
+                                ))
+                        
+                        if coordinates:
+                            yield {
+                                "genome_id": genome_id,
+                                "protein_fasta": str(context.protein_fasta),
+                                "coordinates": [c.to_dict() for c in coordinates]
+                            }
+                        
+                    except Exception as e:
+                        progress.console.print(
+                            f"[bold red]{'Error':>12}[/] processing {genome_id}: {e}"
+                        )
+                    
+                    progress.update(task, advance=1)
+            
+            progress.remove_task(task)
+        
+        cache = ClusterMetadataCache(self._metadata_cache_path)
+        cache.save_streaming(metadata_generator(), len(df))
+        
+        progress.console.print(
+            f"[bold green]{'Extracted':>12}[/] {len(results):,} gene clusters from {len(df):,} strains/genomes"
+        )
+        progress.console.print(
+            f"[bold blue]{'Cached':>12}[/] metadata to [magenta]{self._metadata_cache_path.name}[/]"
+        )
+        
+        return pd.DataFrame(
+            data=results,
+            columns=["cluster_id", "cluster_length", "filename"]
+        ).set_index("cluster_id")
+
+    def _extract_proteins_from_cache(
+        self,
+        progress: rich.progress.Progress,
+        output: pathlib.Path,
+        extractor: GeneClusterExtractor,
         representatives: typing.Container[str],
-        extractor: DefenseSystemExtractor
     ) -> typing.Dict[str, int]:
-        """Extract proteins from defense systems specified in TSV."""
+        """Extract proteins using cached metadata with streaming."""
+        cache = ClusterMetadataCache(self._metadata_cache_path)
+        
+        genome_count = sum(1 for _ in cache.iter_genomes())
         
         protein_sizes = {}
         
         with open(output, "w") as dst:
-            task = progress.add_task(f"[bold blue]{'Processing':>9}[/] protein sequences", total=len(df))
-
-            for n, row in df.iterrows():
-                genome_id = row.get("genome_id", None)
-                if genome_id is None:
-                    genome_id = f"genome_{n:07}"
-                progress.update(task, description=f"[bold blue]{'Processing':>9}[/] strain: [bold cyan]{genome_id}")
-
-                context = GenomeContext(
-                    genome_id=genome_id,
-                    systems_tsv=pathlib.Path(row["systems_tsv"]),
-                    genes_tsv=pathlib.Path(row["genes_tsv"]),
-                    gff_file=pathlib.Path(row["gff_file"]),
-                    genomic_fasta=pathlib.Path(row["genome_fasta_file"]),
-                    protein_fasta=pathlib.Path(row["protein_fasta_file"]),
-                    activity_filter=self.activity_filter,
+            task = progress.add_task(
+                f"[bold blue]{'Processing':>9}[/] protein sequences",
+                total=genome_count
+            )
+            
+            for genome_metadata in cache.iter_genomes():
+                genome_id = genome_metadata["genome_id"]
+                progress.update(
+                    task,
+                    description=f"[bold blue]{'Processing':>9}[/] strain: [bold cyan]{genome_id}"
                 )
                 
-                if not context.is_valid():
-                    progress.console.print(
-                        f"[bold yellow]{'Missing':>12}[/] files for {genome_id}: {', '.join(context.missing_files)}"
-                    )
-                    progress.update(task, advance=1)
-                    continue
-                # extract protein sequences for representative defense systems
                 try:
-                    proteins = extractor.extract_proteins(
-                        context=context,
-                        output_file=dst,
-                        representatives=representatives
+                    proteins = extractor.extract_proteins_from_metadata(
+                        genome_metadata, dst, representatives
                     )
                     protein_sizes.update(proteins)
                 except Exception as e:
-                    progress.console.print(f"[bold red]{'Error':>12}[/] processing {genome_id}: {e}")
-
+                    progress.console.print(
+                        f"[bold red]{'Error':>12}[/] processing {genome_id}: {e}"
+                    )
+                
                 progress.update(task, advance=1)
-
+            
             progress.remove_task(task)
+        
+        self._log_protein_summary(progress, protein_sizes, representatives)
+        return protein_sizes
 
+    def _extract_proteins_direct(
+        self,
+        progress: rich.progress.Progress,
+        df: pl.DataFrame,
+        output: pathlib.Path,
+        extractor: GeneClusterExtractor,
+        representatives: typing.Container[str],
+    ) -> typing.Dict[str, int]:
+        """Direct protein extraction without cache (fallback)."""
+        protein_sizes = {}
+        
+        with open(output, "w") as dst:
+            task = progress.add_task(
+                f"[bold blue]{'Processing':>9}[/] protein sequences",
+                total=len(df)
+            )
+            
+            for row in df.iter_rows(named=True):
+                genome_id = row.get("genome_id") or f"genome_{0:07}"
+                progress.update(
+                    task,
+                    description=f"[bold blue]{'Processing':>9}[/] strain: [bold cyan]{genome_id}"
+                )
+                
+                context = self._create_genome_context(row, genome_id)
+                
+                if not context.is_valid():
+                    progress.console.print(
+                        f"[bold yellow]{'Missing':>12}[/] files for {genome_id}"
+                    )
+                    progress.update(task, advance=1)
+                    continue
+                
+                try:
+                    coordinates = []
+                    temp_buffer = StringIO()
+                    coords = extractor.extract_systems(context, temp_buffer)
+                    
+                    genome_metadata = {
+                        "genome_id": genome_id,
+                        "protein_fasta": str(context.protein_fasta),
+                        "coordinates": [c.to_dict() for c in coords]
+                    }
+                    
+                    proteins = extractor.extract_proteins_from_metadata(
+                        genome_metadata, dst, representatives
+                    )
+                    protein_sizes.update(proteins)
+                    
+                except Exception as e:
+                    progress.console.print(
+                        f"[bold red]{'Error':>12}[/] processing {genome_id}: {e}"
+                    )
+                
+                progress.update(task, advance=1)
+            
+            progress.remove_task(task)
+        
+        self._log_protein_summary(progress, protein_sizes, representatives)
+        return protein_sizes
+
+
+    def _log_protein_summary(
+        self, 
+        progress: rich.progress.Progress, 
+        results: typing.Dict, 
+        representatives: typing.Optional[typing.Container[str]]
+    ):
+        """Log summary for protein extraction."""
         rep_count = "all"
         if representatives:
             try:
                 rep_count = str(len(representatives))
             except TypeError:
                 rep_count = "specified"
-
-        progress.console.print(
-            f"[bold green]{'Extracted':>12}[/] {len(protein_sizes)} proteins from "
-            f"{rep_count} representative systems"
-        )
         
-        return protein_sizes
-
-
-class GFFDataset(BaseDataset):
-    """GFF dataset class.
-    This class is used to extract nucleotide and protein sequences from GFF files.
-    It inherits from the BaseDataset class and implements the extract_sequences
-    and extract_proteins methods.
-    """
-    def __init__(self, gff: typing.Optional[typing.Union[str, pathlib.Path]] = None):
-        """Initializes the GFFDataset class.
-
-        Args:
-            gff (typing.Optional[typing.Union[str, pathlib.Path]], optional): pathlib.Path to the GFF file. Defaults to None.
-        """
-    def extract_sequences(
-        self,
-        progress: rich.progress.Progress,
-        inputs: typing.List[pathlib.Path],
-        output: pathlib.Path,
-        ) -> pandas.DataFrame: 
-        raise NotImplementedError("extract_sequences method is not implemented for GFFDataset")
-
-    def extract_proteins(
-        self,
-        progress: rich.progress.Progress,
-        inputs: typing.List[pathlib.Path],
-        output: pathlib.Path,
-        representatives: typing.Container[str]
-        ) -> typing.Dict[str, int]:
-        raise NotImplementedError("extract_proteins method is not implemented for GFFDataset")
+        progress.console.print(
+            f"[bold green]{'Extracted':>12}[/] {len(results):,} proteins from {rep_count} representative gene clusters"
+        )

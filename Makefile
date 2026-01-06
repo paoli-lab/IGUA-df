@@ -3,9 +3,10 @@ test:
 
 run-igua: 
 	mkdir -p tests/test_output
-	igua -i tests/fixtures/ecoli_input_metadata.tsv --output tests/test_output/ecoli_gcfs.tsv --compositions tests/test_output/ecoli_compositions.h5ad --features tests/test_output/ecoli_features.fa
-	igua -i tests/fixtures/secretion_systems_input_metadata_sample.tsv --output tests/test_output/secretion_small_gcfs.tsv --compositions tests/test_output/secretion_small_compositions.h5ad --features tests/test_output/secretion_small_features.fa
-	igua -i tests/fixtures/emerge_input_metadata_sample15.tsv --output tests/test_output/emerge_gcfs.tsv --compositions tests/test_output/emerge_compositions.h5ad --features tests/test_output/emerge_features.fa
+	igua -i tests/fixtures/ecoli_input_metadata.tsv --dataset-type defense-finder --output tests/test_output/ecoli_gcfs.tsv --compositions tests/test_output/ecoli_compositions.h5ad --features tests/test_output/ecoli_features.fa
+	igua -i tests/fixtures/secretion_systems_input_metadata_sample.tsv --dataset-type defense-finder --output tests/test_output/secretion_small_gcfs.tsv --compositions tests/test_output/secretion_small_compositions.h5ad --features tests/test_output/secretion_small_features.fa
+	igua -i tests/fixtures/emerge_input_metadata_sample15.tsv --dataset-type defense-finder --output tests/test_output/emerge_gcfs.tsv --compositions tests/test_output/emerge_compositions.h5ad --features tests/test_output/emerge_features.fa
+	igua -i tests/fixtures/ecoli_gzip_input_metadata.tsv --dataset-type defense-finder --output tests/test_output/ecoli_gzip_gcfs.tsv --compositions tests/test_output/ecoli_gzip_compositions.h5ad --features tests/test_output/ecoli_gzip_features.fa
 
 
 test-regression:
