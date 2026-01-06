@@ -103,10 +103,12 @@ identifier will be used, and a warning will be displayed.
 
 ### 🛡️ IGUA-df
 
+IGUA can be run on gene clusters obtained with [DefenseFinder](https://github.com/mdmparis/defense-finder) through a dedicated subcommand `defense-finder` (abbreviated `defense-df`). This subcommand will parse the DefenseFinder outputs to extract the gene clusters and their corresponding protein sequences. 
+
 IGUA-df can be run on a single genome/strain by providing all the required files one by one. 
 
 ```bash 
-$ iigua \
+$ igua \
 $   --defense-systems-tsv /path/to/my_strain_defense_finder_systems.tsv \
 $   --defense-genes-tsv /path/to/my_strain_defense_finder_genes.tsv \
 $   --gff-file /path/to/my_strain.gff \
@@ -117,7 +119,7 @@ $   --protein-fasta--file /path/to/my_strain.faa
 The other way to run IGUA-df is by providing a single tsv file which contains the paths to the files specified above. IGUA-df is run row by row _i.e._ genome by genome. The column names must be exactly as follows: `systems_tsv`, `genes_tsv`, `gff_file`, `genome_fasta_file`, `protein_fasta_file`. An optional column `genome_id` can be provided to specify the strain name, otherwise the row index will be used (_e.g._ `genome_0000000`). 
 
 ```console
-$ igua -i ../defense_finder_metadata.tsv
+$ igua -i ../defense_finder_metadata.tsv --dataset-type defense-finder
 ```
 
 
