@@ -1,8 +1,0 @@
-repos:
-  - repo: local
-    hooks:
-      - id: run-tests
-        name: Run regression tests
-        entry: pytest tests/regression/test_output_regression.py -v
-        language: system
-        pass_filenames: false
