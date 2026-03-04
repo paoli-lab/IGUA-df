@@ -4,10 +4,10 @@ build-backend = "maturin"
 
 [project]
 name = "igua"
-version = "0.1.0-post.1"
+version = "0.2.0"
 description = "Iterative Gene clUster Analysis, a high-throughput method for gene cluster family identification."
 readme = 'README.md'
-requires-python = ">=3.7"
+requires-python = ">=3.8"
 license = { file = "COPYING" }
 authors = [
   { name = "Martin Larralde", email = "martin.larralde@embl.de" },
@@ -20,13 +20,13 @@ classifiers = [
     "License :: OSI Approved :: GNU General Public License v3 or later (GPLv3+)",
     "Operating System :: OS Independent",
     "Programming Language :: Rust",
-    "Programming Language :: Python :: 3.7",
     "Programming Language :: Python :: 3.8",
     "Programming Language :: Python :: 3.9",
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
     "Programming Language :: Python :: Implementation :: CPython",
     "Programming Language :: Python :: Implementation :: PyPy",
     "Topic :: Scientific/Engineering :: Bio-Informatics",
@@ -35,11 +35,11 @@ classifiers = [
 ]
 dependencies = [
     "scipy ~=1.4",
-    "gb-io ~=0.3.0",
+    "gb-io >=0.3,<0.5",
     "rich >=12.6,<15.0",
     "numpy >=1.0,<3.0",
-    "pandas >=1.3,<3.0",
-    "anndata >=0.8,<0.12",
+    "pandas >=1.3,<4.0",
+    "anndata >=0.8,<0.13",
     "biopython ~=1.79",
 ]
 
@@ -47,9 +47,9 @@ dependencies = [
 "Homepage" = "https://github.com/zellerlab/IGUA/"
 "Bug Tracker" = "https://github.com/zellerlab/IGUA/issues"
 "Changelog" = "https://github.com/zellerlab/IGUA/blob/master/CHANGELOG.md"
-# "Coverage" = "https://codecov.io/gh/zellerlab/IGUA/"
 "Builds" = "https://github.com/zellerlab/IGUA/actions/"
 "PyPI" = "https://pypi.org/project/IGUA"
+"Preprint" = "https://www.biorxiv.org/content/10.1101/2025.05.15.654203v1"
 
 [project.scripts]
 igua = "igua.cli:main"
@@ -57,13 +57,13 @@ igua = "igua.cli:main"
 [tool.maturin]
 manifest-path = "Cargo.toml"
 features = ["extension-module"]
-python-source = "."
+python-source = "src"
 module-name = "igua.hca"
 
 [tool.cibuildwheel]
 skip = ["*-musllinux_i686"]
 before-build = "pip install maturin"
-#test-command = "python -m unittest tests -v"
+#test-command = "cd {project} && python -m unittest discover -v"
 build-verbosity = 1
 free-threaded-support = false
 
