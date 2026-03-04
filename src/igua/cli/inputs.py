@@ -5,7 +5,7 @@ import typing
 from ..dataset.base import BaseDataset
 from ..dataset.genbank import GenBankDataset
 from ..dataset.antismash import AntiSMASHGenBankDataset, AntiSMASHZipDataset
-from ..dataset.defensefinder import DefenseFinderDataset
+from ..dataset.defensefinder import DefenseFinderDataset, DefenseFinderTSVDataset
 
 
 class BaseInput:
@@ -48,4 +48,4 @@ class AntiSMASHZipInput(BaseInput):
 class DefenseFinderTSV(BaseInput):
 
     def to_dataset(self, args: argparse.Namespace) -> BaseDataset:
-        return DefenseFinderDataset([self.filename])
+        return DefenseFinderTSVDataset(self.filename)

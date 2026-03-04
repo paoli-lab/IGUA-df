@@ -1,56 +1,40 @@
 import collections
-import gc
 import gzip
 import io
+import logging
 import pathlib
-import pickle
 import re
-import tarfile
 import typing
-import uuid
+import warnings
+from pathlib import Path
 from dataclasses import asdict, dataclass
 
-import Bio.SeqIO
-import pandas
+import pandas as pd
+from rich.logging import RichHandler
 import rich.progress
-from rich.console import Console
 
 from .base import BaseDataset, Cluster, Protein
-from .._utils import zopen
 
 
-class TarCache:
-    """Cache for extracted tar members to avoid repeated extraction."""
+_GZIP_MAGIC = b"\x1f\x8b"
 
-    def __init__(self):
-        """Initialize empty cache."""
-        self._cache: typing.Dict[str, bytes] = {}
-        self._tar_handles: typing.Dict[pathlib.Path, tarfile.TarFile] = {}
 
-    def get_member(self, tar_path: pathlib.Path, member_path: str) -> io.BytesIO:
-        """Get tar member, using cache if available."""
-        cache_key = f"{tar_path}::{member_path}"
+logger = logging.getLogger()
+logger.setLevel(logging.INFO)
 
-        if cache_key not in self._cache:
-            if tar_path not in self._tar_handles:
-                self._tar_handles[tar_path] = tarfile.open(tar_path, "r:*")
+console = RichHandler(rich_tracebacks=True, show_path=False, markup=True)
+console.setLevel(logging.INFO)
+console.setFormatter(logging.Formatter("%(message)s"))
+logger.addHandler(console)
 
-            tf = self._tar_handles[tar_path]
-            member = tf.extractfile(member_path)
-            if member is None:
-                raise FileNotFoundError(f"Member {member_path} not found in {tar_path}")
+file_handler = logging.FileHandler("extraction.log")
+file_handler.setLevel(logging.DEBUG)
+file_handler.setFormatter(
+    logging.Formatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s")
+)
+logger.addHandler(file_handler)
 
-            self._cache[cache_key] = member.read()
-            member.close()
-
-        return io.BytesIO(self._cache[cache_key])
-
-    def cleanup(self):
-        """Close all tar handles and clear cache."""
-        for tf in self._tar_handles.values():
-            tf.close()
-        self._tar_handles.clear()
-        self._cache.clear()
+# logging.getLogger("igua.dataset.fasta_gff").setLevel(logging.INFO)
 
 
 def _parse_tar_path(
@@ -77,11 +61,7 @@ def _parse_tar_path(
     return None, None
 
 
-def smart_open(
-    path: pathlib.Path,
-    mode: str = "rb",
-    tar_cache: typing.Optional[TarCache] = None,
-) -> typing.BinaryIO:
+def smart_open(path: pathlib.Path, mode: str = "rb") -> typing.BinaryIO:
     """Open file, handling regular files and tar archives.
 
     Uses caching for tar members to avoid repeated extraction.
@@ -90,7 +70,6 @@ def smart_open(
     Args:
         path: Path to file (may be inside tar archive).
         mode: File mode ('rb' or 'rt').
-        tar_cache: Optional TarCache instance for caching tar members.
 
     Returns:
         File-like object (binary mode).
@@ -98,12 +77,53 @@ def smart_open(
     tar_path, member_path = _parse_tar_path(path)
 
     if tar_path and member_path:
-        if tar_cache is None:
-            tar_cache = TarCache()
-        member_data = tar_cache.get_member(tar_path, member_path)
-        return zopen(member_data)
+        #######
+        member_data = None
+        reader = io.BufferedReader(member_data)
+
+        if reader.peek().startswith(_GZIP_MAGIC):
+            reader = gzip.GzipFile(mode="rb", fileobj=reader)  # type: ignore
+
+        return reader  # type: ignore
     else:
-        return zopen(path)
+        reader = open(path, "rb")
+        if reader.peek().startswith(_GZIP_MAGIC):
+            reader = gzip.GzipFile(mode="rb", fileobj=reader)  # type: ignore
+        return reader  # type: ignore
+
+
+def read_fasta(file_path: pathlib.Path) -> typing.Iterable[typing.Tuple[str, str, str]]:
+    """Stream FASTA records from file.
+
+    Handles both plain and gzip-compressed FASTA files.
+
+    Args:
+        file_path: Path to FASTA file (.fasta, .fa, .fna, or .gz).
+
+    Yields:
+        Tuple of (sequence_id, full_header, sequence_string).
+    """
+    with smart_open(file_path) as reader:
+        name = None
+        full_header = None
+        sequence = []
+
+        for line in io.TextIOWrapper(reader, encoding="utf-8"):
+            line = line.strip()
+            if not line:
+                continue
+
+            if line.startswith(">"):
+                if name is not None:
+                    yield name, full_header, "".join(sequence)
+                full_header = line[1:]
+                name = full_header.split()[0]
+                sequence = []
+            else:
+                sequence.append(line)
+
+        if name is not None:
+            yield name, full_header, "".join(sequence)
 
 
 @dataclass
@@ -116,7 +136,7 @@ class SystemCoordinates:
         start_coord: Start coordinate on the sequence (1-based).
         end_coord: End coordinate on the sequence (1-based, inclusive).
         strand: Strand orientation ('+', '-', or '.').
-        genes: List of gene identifiers in the system.
+        genes: List of gene identifiers in the cluster.
         fasta_file: Path to the genome FASTA file.
         valid: Whether the coordinates are valid.
         error_msg: Error message if coordinates are invalid.
@@ -160,17 +180,13 @@ class GFFIndex:
         path: Path to the GFF file.
     """
 
-    def __init__(
-        self, gff_path: pathlib.Path, tar_cache: typing.Optional[TarCache] = None
-    ):
+    def __init__(self, gff_path: pathlib.Path):
         """Initialize GFF index.
 
         Args:
             gff_path: Path to the GFF file.
-            tar_cache: Optional TarCache instance for caching tar members.
         """
         self.path = gff_path
-        self._tar_cache = tar_cache
         self._index: typing.Dict[str, typing.Dict] = {}
         self._build_index()
 
@@ -182,13 +198,13 @@ class GFFIndex:
         protein_id attributes. Also creates prefixed variants
         (gene-, cds-) and underscore/tilde variants.
         """
-        with smart_open(self.path, tar_cache=self._tar_cache) as reader:
+        with smart_open(self.path) as reader:
             for line in io.TextIOWrapper(reader, encoding="utf-8"):
                 if line.startswith("#") or not line.strip():
                     continue
 
                 parts = line.strip().split("\t")
-                if len(parts) < 9 or parts[2] not in ["gene", "CDS"]:
+                if len(parts) < 9:
                     continue
 
                 seqid, _, ftype, start, end, _, strand, _, attrs = parts
@@ -246,41 +262,17 @@ class GFFIndex:
         return gene_id in self._index
 
 
-def read_fasta(
-    file_path: pathlib.Path, tar_cache: typing.Optional[TarCache] = None
-) -> typing.Iterable[typing.Tuple[str, str, str]]:
-    """Stream FASTA records from file.
-
-    Handles both plain and gzip-compressed FASTA files.
-
-    Args:
-        file_path: Path to FASTA file (.fasta, .fa, .fna, or .gz).
-        tar_cache: Optional TarCache instance for caching tar members.
-
-    Yields:
-        Tuple of (sequence_id, full_header, sequence_string).
-    """
-    with smart_open(file_path, tar_cache=tar_cache) as reader:
-        with io.TextIOWrapper(reader, encoding="utf-8") as text_reader:
-            yield from Bio.SeqIO.parse(text_reader, "fasta")
-
-
 class ProteinIndex:
     """Lazy-loading protein sequence index for efficient lookup."""
 
-    def __init__(
-        self, protein_fasta: pathlib.Path, tar_cache: typing.Optional[TarCache] = None
-    ):
+    def __init__(self, protein_fasta: pathlib.Path):
         """Initialize protein index without loading sequences.
 
         Args:
             protein_fasta: Path to protein FASTA file.
-            tar_cache: Optional TarCache instance for caching tar members.
         """
         self.path = protein_fasta
-        self._tar_cache = tar_cache
         self._sequences: typing.Dict[str, str] = {}
-        self._headers: typing.Dict[str, str] = {}
         self._loaded = False
 
     def _ensure_loaded(self, gene_ids: typing.Optional[set] = None):
@@ -292,10 +284,16 @@ class ProteinIndex:
         if self._loaded:
             return
 
-        for record in read_fasta(self.path, tar_cache=self._tar_cache):
-            if gene_ids is None or record.id in gene_ids:
-                self._sequences[record.id] = str(record.seq)
-                self._headers[record.id] = record.description
+        for seq_id, full_header, sequence in read_fasta(self.path):
+            if gene_ids is None or seq_id in gene_ids:
+                self._sequences[seq_id] = sequence
+
+            if gene_ids:
+                for attr in ["locus_tag", "ID", "Name", "gene", "protein_id"]:
+                    if match := re.search(rf"\[{attr}=([^\]]+)\]", full_header):
+                        attr_value = match.group(1)
+                        if attr_value in gene_ids:
+                            self._sequences[attr_value] = sequence
 
         self._loaded = True
 
@@ -320,157 +318,115 @@ class ProteinIndex:
             self._ensure_loaded()
         return self._sequences.get(protein_id)
 
-    def get_with_fallback(self, gene_id: str) -> typing.Optional[str]:
-        """Get protein sequence with fallback to header search.
 
-        Args:
-            gene_id: Gene identifier to search for.
-
-        Returns:
-            Protein sequence if found, None otherwise.
-        """
-        seq = self.get(gene_id)
-        if seq:
-            return seq
-
-        with smart_open(self.path) as reader:
-            with io.TextIOWrapper(reader, encoding="utf-8") as text_reader:
-                for record in Bio.SeqIO.parse(text_reader, "fasta"):
-                    for attr in ["locus_tag", "ID", "Name", "gene"]:
-                        if re.search(rf"\[{attr}=({re.escape(gene_id)})\]", record.description):
-                            return str(record.seq)
-
-        return None
-
-
-class GenomeContext:
-    """Data container for genome/MAG file paths and metadata."""
+class FastaGFFDataset(BaseDataset):
+    """Dataset for extracting sequences from FASTA/GFF files."""
 
     def __init__(
         self,
-        genome_id: typing.Optional[str],
-        cluster_tsv: pathlib.Path,
-        gff_file: pathlib.Path,
-        genome_fasta: pathlib.Path,
-        protein_fasta: pathlib.Path,
-        column_mapping: typing.Dict[str, str],
-        system_loader: typing.Callable[[pathlib.Path, Console], pandas.DataFrame],
-    ):
-        """Initialize genome context.
+        cluster_table=pathlib.Path,
+        gff_file=pathlib.Path,
+        genome_fasta=pathlib.Path,
+        protein_fasta=pathlib.Path,
+        genome_id: typing.Optional[str] = None,
+        column_mapping: typing.Optional[typing.Dict[str, str]] = None,
+    ) -> None:
+        """Initialize the FastaGFFDataset class.
 
         Args:
-            genome_id: Genome identifier (generates UUID if None).
-            cluster_tsv: Path to cluster metadata TSV file.
-            gff_file: Path to GFF annotation file.
-            genome_fasta: Path to genome FASTA file.
-            protein_fasta: Path to protein FASTA file.
-            column_mapping: Column name mapping for TSV parsing.
-            system_loader: Function to load and filter systems.
+            cluster_table: Path to the clusters table file.
+            gff_file: Path to the GFF file.
+            genome_fasta: Path to the genome FASTA file.
+            protein_fasta: Path to the protein FASTA file.
+            genome_id: Optional genome identifier. If None, a random ID is generated.
+            column_mapping: Custom column mapping. If None, uses
+                default generic mapping.
         """
-        self.genome_id = genome_id if genome_id else str(uuid.uuid4())[:8]
-        self.cluster_tsv = pathlib.Path(cluster_tsv)
-        self.gff_file = pathlib.Path(gff_file)
-        self.genome_fasta = pathlib.Path(genome_fasta)
-        self.protein_fasta = pathlib.Path(protein_fasta)
-        self.column_mapping = column_mapping
-        self.system_loader = system_loader
+        super().__init__()
+        self.genome_id = genome_id if genome_id else str(genome_fasta)
+        self.cluster_table = cluster_table
+        self.gff_file = gff_file
+        self.genome_fasta = genome_fasta
+        self.protein_fasta = protein_fasta
+        self.column_mapping = column_mapping or {
+            "cluster_id": "cluster_id",
+            "genes_in_cluster": "genes_in_cluster",
+        }
 
-        self.missing_files = [
-            f"{name}: {path}"
-            for path, name in [
-                (self.cluster_tsv, "cluster_tsv"),
-                (self.gff_file, "gff_file"),
-                (self.genome_fasta, "genome_fasta"),
-                (self.protein_fasta, "protein_fasta"),
-            ]
-            if not path.exists() and "tar.gz" not in str(path)
-        ]
-    def __repr__(self):
-        """Return string representation."""
-        return (
-            f"<GenomeContext "
-            f"genome_id={self.genome_id!r} "
-            f"files={4 - len(self.missing_files)}/4>"
-        )
+        self._cluster_df: typing.Optional[pd.DataFrame] = None
+        self._protein_idx: typing.Optional[ProteinIndex] = None
+        self._gff_db: typing.Optional[GFFIndex] = None
+        self._coordinates: typing.Optional[typing.List[SystemCoordinates]] = None
 
-    def is_valid(self) -> bool:
+        self.is_valid = self._is_valid()
+        if not self.is_valid:
+            raise FileNotFoundError(f"Missing files for genome {self.genome_id}")
+
+
+        # self.cluster_df
+
+    def _is_valid(self) -> bool:
         """Check if all required files exist.
 
         Returns:
             True if all files are present, False otherwise.
         """
+        self.missing_files = [
+            f"{name}: {fpath}"
+            for fpath, name in [
+                (self.cluster_table, "cluster_table"),
+                (self.gff_file, "gff_file"),
+                (self.genome_fasta, "genome_fasta"),
+                (self.protein_fasta, "protein_fasta"),
+            ]
+            if not Path(fpath).exists() and "tar.gz" not in str(fpath)
+        ]
         return len(self.missing_files) == 0
 
-
-class GenomeResources:
-    """Manages lazy-loading and caching of genome resources."""
-
-    def __init__(self, context: GenomeContext, console: Console):
-        """Initialize genome resources manager.
+    def _load_and_filter_clusters(
+        self, cluster_table_path: pathlib.Path, use_columns: typing.List[str]
+    ) -> pd.DataFrame:
+        """Load clusters TSV file.
 
         Args:
-            context: Genome context with file paths and adapter.
+            cluster_table_path: Path to clusters TSV.
+            use_columns: List of columns to use from the TSV.
             console: Rich console for logging.
+
+        Returns:
+            Pandas DataFrame with cluster data.
         """
-        self.context = context
-        self.console = console
-        self._cluster_df: typing.Optional[pandas.DataFrame] = None
-        self._protein_idx: typing.Optional[ProteinIndex] = None
-        self._gff_db: typing.Optional[GFFIndex] = None
-        self._coordinates_cache: typing.Optional[typing.List[SystemCoordinates]] = None
-        self._tar_cache = TarCache()
-
-    def __enter__(self):
-        """Enter context manager."""
-        return self
-
-    def __exit__(self, exc_type, exc_val, exc_tb):
-        """Exit context manager and cleanup resources."""
-        self._tar_cache.cleanup()
-        return False
+        df = pd.read_csv(
+            cluster_table_path, sep="\t", usecols=use_columns, low_memory=True
+        )
+        return df
 
     @property
-    def cluster_df(self) -> pandas.DataFrame:
+    def cluster_df(self) -> pd.DataFrame:
         """Load and filter clusters TSV.
 
         Returns:
-            Polars DataFrame with filtered systems.
+            Pandas DataFrame with filtered clusters.
         """
         if self._cluster_df is not None:
             return self._cluster_df
 
-        df = self.context.system_loader(self.context.cluster_tsv, self.console)
+        use_columns = list(self.column_mapping.values())
+        df = self._load_and_filter_clusters(self.cluster_table, use_columns)
 
-        col_map = self.context.column_mapping
-        cluster_col = col_map["cluster_id"]
+        col_map = self.column_mapping
+        cluster_id = col_map["cluster_id"]
 
-        dup = df.duplicated(cluster_col)
-        n_dup = dup.sum()
-        if n_dup > 0:
-            dup_ids = df[dup][cluster_col]
-            self.console.print(
-                f"[bold yellow]{'Warning':>12}[/] {n_dup} duplicate cluster/s in [bold cyan]{self.context.genome_id}[/]: "
-                f"[cyan]{', '.join(dup_ids[:5])}{'...' if n_dup > 5 else ''}[/]"
+        duplicate_mask = df.duplicated(subset=[cluster_id], keep="first")
+        if duplicate_mask.any():
+            duplicate_clusters = df[duplicate_mask][cluster_id].tolist()
+            n_duplicates = len(duplicate_clusters)
+
+            logger.warning(
+                f"{n_duplicates} duplicate cluster/s in [bold cyan]{self.genome_id}[/]: "
+                f"[cyan]{', '.join(duplicate_clusters[:5])}{'...' if n_duplicates > 5 else ''}[/]"
             )
-        # if (
-        #     n_dup := df.filter(pl.col(cluster_col).is_duplicated())
-        #     .select(cluster_col)
-        #     .unique()
-        #     .height
-        # ) > 0:
-        #     dup_ids = (
-        #         df.filter(pl.col(cluster_col).is_duplicated())
-        #         .select(cluster_col)
-        #         .unique()
-        #         .to_series()
-        #         .to_list()
-        #     )
-        #     self.console.print(
-        #         f"[bold yellow]{'Warning':>12}[/] {n_dup} duplicate cluster/s in [bold cyan]{self.context.genome_id}[/]: "
-        #         f"[cyan]{', '.join(dup_ids[:5])}{'...' if n_dup > 5 else ''}[/]"
-        #     )
-        #     df = df.unique(subset=[cluster_col], keep="first")
-            df = df[~dup]
+            df = df.drop_duplicates(subset=[cluster_id], keep="first")
 
         self._cluster_df = df
         return self._cluster_df
@@ -483,9 +439,7 @@ class GenomeResources:
             ProteinIndex instance.
         """
         if self._protein_idx is None:
-            self._protein_idx = ProteinIndex(
-                self.context.protein_fasta, tar_cache=self._tar_cache
-            )
+            self._protein_idx = ProteinIndex(self.protein_fasta)
         return self._protein_idx
 
     @property
@@ -496,19 +450,19 @@ class GenomeResources:
             GFFIndex instance.
         """
         if self._gff_db is None:
-            self._gff_db = GFFIndex(self.context.gff_file, tar_cache=self._tar_cache)
+            self._gff_db = GFFIndex(self.gff_file)
         return self._gff_db
 
     @property
     def coordinates(self) -> typing.List[SystemCoordinates]:
-        """Build and cache system coordinates.
+        """Build cluster coordinates.
 
         Returns:
-            List of SystemCoordinates for all systems.
+            List of SystemCoordinates for all clusters.
         """
-        if self._coordinates_cache is None:
-            self._coordinates_cache = self._build_coordinates()
-        return self._coordinates_cache
+        if self._coordinates is None:
+            self._coordinates = self._build_coordinates()
+        return self._coordinates
 
     def _build_coordinates(self) -> typing.List[SystemCoordinates]:
         """Parse coordinates from cluster DataFrame.
@@ -517,99 +471,68 @@ class GenomeResources:
             List of SystemCoordinates for each cluster.
         """
         coordinates = []
-        for row in self.cluster_df.itertuples():
-            coord = self._parse_system_coordinates(row)
+        for _, row in self.cluster_df.iterrows():
+            coord = self._parse_cluster_coordinates(row)
             coordinates.append(coord)
         return coordinates
 
-    def _parse_system_coordinates(self, row: dict) -> SystemCoordinates:
-        """Parse coordinates for a single system.
+    def _parse_cluster_coordinates(self, row: dict) -> SystemCoordinates:
+        """Parse coordinates for a single cluster.
 
         Uses adapter's column mapping for format flexibility.
 
         Args:
-            row: Dictionary containing system data from TSV row.
+            row: Dictionary containing cluster data from TSV row.
 
         Returns:
             SystemCoordinates instance.
         """
-        col_map = self.context.column_mapping
-        cluster_id = getattr(row, col_map['cluster_id'])
+        col_map = self.column_mapping
+        cluster_id = row[col_map["cluster_id"]]
 
-        sys_beg_gene = getattr(row, col_map['start_gene'])
-        sys_end_gene = getattr(row, col_map['end_gene'])
-
-        if sys_beg_gene is None or sys_end_gene is None:
-            return self._invalid_coord(
-                cluster_id,
-                [],
-                f"Missing '{col_map['start_gene']}' or '{col_map['end_gene']}' columns in systems TSV",
-            )
-
-        try:
-            gene_list = [
-                g.strip()
-                for g in str(getattr(row, col_map["genes_in_cluster"])).split(",")
-                if g.strip()
-            ]
-        except (KeyError, AttributeError):
-            return self._invalid_coord(
-                cluster_id,
-                [],
-                f"Missing '{col_map['genes_in_cluster']}' column",
-            )
+        gene_list = [
+            g.strip()
+            for g in str(row[col_map["genes_in_cluster"]]).split(",")
+            if g.strip()
+        ]
 
         if not gene_list:
             return self._invalid_coord(cluster_id, [], "Empty gene list")
 
-        beg_feature = self.gff_db.get(sys_beg_gene)
-        end_feature = self.gff_db.get(sys_end_gene)
+        features = [self.gff_db.get(gene_id) for gene_id in gene_list]
 
-        if beg_feature is None:
-            return self._invalid_coord(
-                cluster_id, gene_list, f"Start gene '{sys_beg_gene}' not found in GFF"
-            )
-
-        if end_feature is None:
-            return self._invalid_coord(
-                cluster_id, gene_list, f"End gene '{sys_end_gene}' not found in GFF"
-            )
-
-        seq_id_beg = beg_feature["seqid"]
-        seq_id_end = end_feature["seqid"]
-
-        if seq_id_beg != seq_id_end:
+        if None in features:
+            missing = [
+                gene_id for gene_id, feat in zip(gene_list, features) if feat is None
+            ]
             return self._invalid_coord(
                 cluster_id,
                 gene_list,
-                f"Start and end genes on different contigs/seqs: {seq_id_beg} vs {seq_id_end} for [bold cyan]{str(self.context.genome_id)}[/]",
+                f"Genes not found in GFF: {', '.join(missing[:3])}",
             )
 
-        seq_id = seq_id_beg
+        seq_ids = {feat["seqid"] for feat in features}
+        if len(seq_ids) > 1:
+            return self._invalid_coord(
+                cluster_id, gene_list, f"Genes span multiple contigs: {seq_ids}"
+            )
 
-        start = min(
-            beg_feature["start"],
-            beg_feature["end"],
-            end_feature["start"],
-            end_feature["end"],
-        )
-        end = max(
-            beg_feature["start"],
-            beg_feature["end"],
-            end_feature["start"],
-            end_feature["end"],
-        )
+        seq_id = seq_ids.pop()
 
-        strand = beg_feature["strand"]
+        start = min(min(feat["start"], feat["end"]) for feat in features)
+        end = max(max(feat["start"], feat["end"]) for feat in features)
+
+        strand = features[0]["strand"]
 
         region_size = end - start + 1
         if region_size > 1e5:
-            self.console.print(
-                f"[bold yellow]{'Warning':>12}[/] Cluster [bold cyan]{cluster_id}[/] unusually large: {region_size} bp"
+            logger.info(
+                f"Cluster {cluster_id} unusually large: {region_size:,} bp (genome: [bold cyan]{self.genome_id}[/])"
             )
+
         elif region_size < 50:
-            self.console.print(
-                f"[bold yellow]{'Warning':>12}[/] Cluster [bold cyan]{cluster_id}[/] unusually small: {region_size} bp"
+            logger.info(
+                f"Cluster {cluster_id} unusually small: {region_size} bp (genome: [bold cyan]{self.genome_id}[/])"
             )
 
         return SystemCoordinates(
@@ -619,7 +542,7 @@ class GenomeResources:
             end_coord=end,
             strand=strand,
             genes=gene_list,
-            fasta_file=str(self.context.genome_fasta),
+            fasta_file=str(self.genome_fasta),
             valid=True,
         )
 
@@ -637,8 +560,10 @@ class GenomeResources:
         Returns:
             Invalid SystemCoordinates instance with error message.
         """
-        self.console.print(
-            f"[bold yellow]{'Warning':>12}[/] {error} for cluster [bold cyan]{cluster_id}[/]"
+
+        # ? raise warning and contiune instead of returning empty coords?
+        logger.warning(
+            f"{error} for cluster {cluster_id} (genome: [bold cyan]{self.genome_id}[/])"
         )
         return SystemCoordinates(
             cluster_id=cluster_id,
@@ -647,14 +572,13 @@ class GenomeResources:
             end_coord=0,
             strand="",
             genes=genes,
-            fasta_file=str(self.context.genome_fasta),
+            fasta_file=str(self.genome_fasta),
             valid=False,
             error_msg=error,
         )
 
     def extract_genome_sequences(
         self,
-        verbose: bool = False,
     ) -> typing.Iterator[Cluster]:
         """Extract nucleotide sequences for gene clusters.
 
@@ -662,75 +586,68 @@ class GenomeResources:
 
         Args:
             output: Output sink for writing records.
-            verbose: Enable detailed logging.
 
         Returns:
             List of (cluster_id, sequence_length, fasta_file) tuples.
         """
+        # builds coordinates
+        # iterates over rows of cluster_df
+        # parses coordinates using gff_db
+        # so gets genes + builds gff_df
+        # validates coordinates (genes exist, on same contig, cluster size etc)
         coordinates = self.coordinates
         valid_coords = [c for c in coordinates if c.valid]
 
         if not valid_coords:
-            self.console.print(
-                f"[bold yellow]{'Warning':>12}[/] No valid clusters to extract for [bold cyan]{self.context.genome_id}[/]"
-            )
+            logger.warning(f"No valid clusters to extract for {self.genome_id}")
             return []
 
-        contig_groups: typing.Dict[str, typing.List[SystemCoordinates]] = {}
+        contig_groups: collections.defaultdict[str, typing.List[SystemCoordinates]] = (
+            collections.defaultdict(list)
+        )
         for coord in valid_coords:
             contig_groups.setdefault(coord.seq_id, []).append(coord)
 
         num_contigs = len(contig_groups)
 
-        if verbose:
-            self.console.print(
-                f"[bold blue]{'Processing':>12}[/] {len(valid_coords)} clusters across {num_contigs} contigs/seqs for [bold cyan]{str(self.context.genome_id)}[/]"
-            )
+        logger.info(
+            f"[bold blue]Processing[/] {len(valid_coords)} clusters across {num_contigs} contigs (genome: [bold cyan]{self.genome_id}[/])"
+        )
 
-        # results = []
-
-        for record in read_fasta(
-            self.context.genome_fasta, tar_cache=self._tar_cache
-        ):
-            if record.id not in contig_groups:
+        for seq_id, _, sequence in read_fasta(self.genome_fasta):
+            if seq_id not in contig_groups:
                 continue
 
-            if verbose:
-                self.console.print(
-                    f"[bold blue]{'Loading':>12}[/] contig [blue]{record.id}[/] ({len(contig_groups[record.id])} clusters) for [bold cyan]{self.context.genome_id}[/]"
-                )
+            logger.debug(
+                f"Loading contig {seq_id} ({len(contig_groups[seq_id])} clusters, genome: [bold cyan]{self.genome_id}[/])"
+            )
 
-            for coord in contig_groups[record.id]:
-                subseq = str(record.seq[coord.start_coord - 1 : coord.end_coord])
+            for coord in contig_groups[seq_id]:
+                subseq = sequence[coord.start_coord - 1 : coord.end_coord]
                 yield Cluster(coord.cluster_id, subseq, source=coord.fasta_file)
 
-                if verbose:
-                    self.console.print(
-                        f"[bold blue]{'Extracted':>12}[/] [cyan]{coord.cluster_id}[/] ({len(subseq)} bp) for [bold cyan]{self.context.genome_id}[/]"
-                    )
+            logger.debug(
+                f"[bold green]Extracted[/] [cyan]{coord.cluster_id}[/] ({len(subseq)} bp, genome: [bold cyan]{self.genome_id}[/])"
+            )
 
-            del contig_groups[record.id]
+            del contig_groups[seq_id]
 
             if not contig_groups:
                 break
 
         if contig_groups:
             for seq_id in contig_groups:
-                self.console.print(
-                    f"[bold red]{'Error':>12}[/] Contig {seq_id} not found in genome [bold cyan]{self.context.genome_id}[/]"
-                )
+                logger.error(f"Contig {seq_id} not found in genome {self.genome_id}")
 
     def extract_proteins_from_coordinates(
         self,
         coordinates: typing.List[SystemCoordinates],
-        verbose: bool = False,
     ) -> typing.Iterable[Protein]:
         """Extract protein sequences from gene coordinates.
 
         Args:
             coordinates: List of cluster coordinates.
             output_file: Output file handle for writing sequences.
-            verbose: Enable detailed logging.
 
         Returns:
             Dictionary mapping protein_id to sequence length.
@@ -738,9 +655,7 @@ class GenomeResources:
         valid_coords = [c for c in coordinates if c.valid]
 
         if not valid_coords:
-            self.console.print(
-                f"[bold yellow]{'Warning':>12}[/] No valid clusters for [bold cyan]{self.context.genome_id}[/]"
-            )
+            logger.warning(f"No valid clusters for {self.genome_id}")
             return
 
         all_gene_ids = set()
@@ -751,15 +666,14 @@ class GenomeResources:
 
         total_genes = len(all_gene_ids)
 
-        if verbose:
-            self.console.print(
-                f"[bold blue]{'Processing':>12}[/] {total_genes} proteins from {len(valid_coords)} clusters for [bold cyan]{str(self.context.genome_id)}[/]"
-            )
+        logger.info(
+            f"[bold blue]Processing[/] {total_genes} proteins from {len(valid_coords)} clusters (genome: [bold cyan]{self.genome_id}[/])"
+        )
 
         n_extracted = 0
         for coord in valid_coords:
             for gene_id in coord.genes:
-                if seq := self.protein_idx.get_with_fallback(gene_id):
+                if seq := self.protein_idx.get(gene_id):
                     protein_id = f"{coord.cluster_id}__{gene_id}"
                     yield Protein(
                         protein_id,
@@ -768,229 +682,100 @@ class GenomeResources:
                     )
                     n_extracted += 1
                 else:
-                    if verbose:
-                        self.console.print(
-                            f"[bold yellow]{'Warning':>12}[/] Protein {gene_id} "
-                            f"not found for cluster [bold cyan]{coord.cluster_id}[/]"
-                        )
+                    logger.warning(
+                        f"Protein {gene_id} not found for cluster {coord.cluster_id} (genome: [bold cyan]{self.genome_id}[/])"
+                    )
 
-        self.console.print(
-            f"[bold blue]{'Extracted':>12}[/] {n_extracted} proteins from "
-            f"{len(coordinates)} clusters in [bold cyan]{self.context.genome_id}[/]"
+        logger.info(
+            f"[bold green]Extracted[/] {n_extracted} proteins from {len(coordinates)} clusters (genome: [bold cyan]{self.genome_id}[/])"
         )
-
-
-class FastaGFFDataset(BaseDataset):
-    """Dataset for extracting sequences from FASTA/GFF files."""
-
-    def __init__(
-        self,
-        inputs: typing.List[pathlib.Path],
-        column_mapping: typing.Optional[typing.Dict[str, str]] = None,
-    ) -> None:
-        """Initialize the FastaGFFDataset class.
-
-        Args:
-            inputs: List of input paths (metadata TSV or individual
-                files).
-            column_mapping: Custom column mapping. If None, uses
-                default generic mapping.
-        """
-        super().__init__()
-        self.inputs = inputs
-
-        self.column_mapping = column_mapping or {
-            "cluster_id": "cluster_id",
-            "start_gene": "start_gene",
-            "end_gene": "end_gene",
-            "genes_in_cluster": "genes_in_cluster",
-        }
-
-        self.verbose: bool = False
-        self.gff_cache_dir: typing.Optional[pathlib.Path] = None
-        self._metadata_cache_path: typing.Optional[pathlib.Path] = None
-        self.cluster_metadata = inputs[0]
-
-    def _create_genome_context(self, row: typing.Dict, genome_id: str) -> GenomeContext:
-        """Create GenomeContext from metadata row.
-
-        Args:
-            row: Dictionary with file paths from metadata TSV.
-            genome_id: Genome identifier.
-
-        Returns:
-            GenomeContext instance.
-        """
-        return GenomeContext(
-            genome_id=genome_id,
-            cluster_tsv=pathlib.Path(row.cluster_tsv),
-            gff_file=pathlib.Path(row.gff_file),
-            genome_fasta=pathlib.Path(row.genome_fasta_file),
-            protein_fasta=pathlib.Path(row.protein_fasta_file),
-            column_mapping=self.column_mapping,
-            system_loader=self._load_and_filter_systems,
-        )
-
-    def _load_and_filter_systems(
-        self, tsv_path: pathlib.Path, console: Console
-    ) -> pandas.DataFrame:
-        """Load systems TSV file.
-
-        Args:
-            tsv_path: Path to systems TSV.
-            console: Rich console for logging.
-
-        Returns:
-            Polars DataFrame with system data.
-        """
-        df = pandas.read_csv(tsv_path, sep="\t")
-        return df
 
     def extract_clusters(
         self,
         progress: rich.progress.Progress,
     ) -> typing.Iterable[Cluster]:
-        progress.console.print(
-            f"[bold blue]{'Using':>12}[/] cluster metadata file: [magenta]{self.cluster_metadata}[/]"
+
+        coordinates = self.coordinates
+        valid_count = sum(1 for c in coordinates if c.valid)
+
+        logger.info(
+            f"[bold green]Validated[/] {valid_count}/{len(coordinates)} clusters (genome: [bold cyan]{self.genome_id}[/])"
         )
 
-        df = pandas.read_csv(self.cluster_metadata, sep="\t")
+        n_extracted = 0
+        for cluster in self.extract_genome_sequences():
+            yield cluster
+            n_extracted += 1
 
-        results = []
+        contig_groups = collections.defaultdict(list)
+        for coord in coordinates:
+            if coord.valid:
+                contig_groups[coord.seq_id].append(coord)
+        num_contigs = len(contig_groups)
 
-        genome_count = 0
-        task = progress.add_task(
-            f"[bold blue]{'Processing':>9}[/] gene clusters", total=len(df)
-        )
-
-        for row in df.itertuples():
-            genome_id = getattr(row, "genome_id", f"genome_{genome_count:07}")
-            genome_count += 1
-            progress.update(
-                task,
-                description=f"[bold blue]{'Processing':>9}[/] genome: [bold cyan]{genome_id}",
-            )
-
-            context = self._create_genome_context(row, genome_id)
-
-            if not context.is_valid():
-                progress.console.print(
-                    f"[bold yellow]{'Missing':>12}[/] files for [bold cyan]{genome_id}[/]"
-                )
-                progress.update(task, advance=1)
-                continue
-
-            with GenomeResources(context, progress.console) as resources:
-                coordinates = resources.coordinates
-                valid_count = sum(1 for c in coordinates if c.valid)
-
-                progress.update(
-                    task,
-                    description=f"[bold blue]{'Processing':>9}[/] genome: [bold cyan]{genome_id}[/] - validated {valid_count}/{len(coordinates)} clusters",
-                )
-
-                n_extracted = 0
-                for cluster in resources.extract_genome_sequences(self.verbose):
-                    yield cluster
-                    n_extracted += 1
-
-                contig_groups = collections.defaultdict(list)
-                for coord in coordinates:
-                    if coord.valid:
-                        contig_groups[coord.seq_id].append(coord)
-                num_contigs = len(contig_groups)
-
-                progress.console.print(
-                    f"[bold blue]{'Extracted':>12}[/] {n_extracted} "
-                    f"gene clusters across {num_contigs} contigs/seqs for "
-                    f"[bold cyan]{context.genome_id}[/]"
-                )
-
-                for coord in coordinates:
-                    if coord.valid:
-                        results.append(
-                            (
-                                coord.cluster_id,
-                                coord.end_coord - coord.start_coord + 1,
-                                coord.fasta_file,
-                            )
-                        )
-
-            progress.update(task, advance=1)
-
-        progress.remove_task(task)
-        progress.console.print(
-            f"[bold green]{'Extracted':>12}[/] {len(results)} gene clusters "
-            f"from {len(df)} genomes/MAGs"
+        logger.info(
+            f"[bold green]Extracted[/] {n_extracted} gene clusters across {num_contigs} contigs (genome: [bold cyan]{self.genome_id}[/])"
         )
 
     def extract_proteins(
         self,
         progress: rich.progress.Progress,
-        cluster_ids: typing.Container[str],
-    ) -> typing.Dict[str, int]:
+        cluster_ids: typing.Collection[str],
+    ) -> typing.Iterable[Protein]:
 
-        df = pandas.read_csv(self.cluster_metadata, sep="\t")
+        self.progress = progress
 
-        genome_count = 0
-        task = progress.add_task(
-            f"[bold blue]{'Processing':>9}[/] protein sequences", total=len(df)
+        coordinates = self.coordinates
+        if cluster_ids:
+            coordinates = [c for c in coordinates if c.cluster_id in cluster_ids]
+        yield from self.extract_proteins_from_coordinates(
+            coordinates,
         )
 
-        for row in df.itertuples():
-            genome_id = getattr(row, "genome_id", f"genome_{genome_count:07}")
-            genome_count += 1
-            progress.update(
-                task,
-                description=f"[bold blue]{'Processing':>9}[/] genome: [bold cyan]{genome_id}",
+
+class MetadataTSVDataset(BaseDataset):
+
+    def __init__(
+        self,
+        cluster_metadata_table: pathlib.Path,
+        column_mapping: typing.Optional[typing.Dict[str, str]] = None,
+        progress: rich.progress.Progress = None,
+    ):
+        self.cluster_metadata_table: pathlib.Path = cluster_metadata_table
+        self.column_mapping = column_mapping
+        self.progress = progress
+
+        self.cluster_metadata_df = pd.read_csv(self.cluster_metadata_table, sep="\t")
+
+        logger.info(
+            f"Using cluster metadata table: [magenta]{str(self.cluster_metadata_table)}[/]"
+        )
+
+        self.datasets = [
+            FastaGFFDataset(
+                cluster_table=pathlib.Path(row["cluster_table"]),
+                gff_file=pathlib.Path(row["gff_file"]),
+                genome_fasta=pathlib.Path(row["genome_fasta_file"]),
+                protein_fasta=pathlib.Path(row["protein_fasta_file"]),
+                column_mapping=column_mapping,
+                genome_id=row.get("genome_id", None),
             )
+            for _, row in self.cluster_metadata_df.iterrows()
+        ]
+        pass
 
-            context = self._create_genome_context(row, genome_id)
+    def extract_clusters(
+        self, progress: rich.progress.Progress
+    ) -> typing.Iterable[Cluster]:
 
-            if not context.is_valid():
-                progress.console.print(
-                    f"[bold yellow]{'Missing':>12}[/] files for {genome_id}"
-                )
-                progress.update(task, advance=1)
-                continue
+        for dataset in self.datasets:
+            yield from dataset.extract_clusters(progress=progress)
 
-            with GenomeResources(context, progress.console) as resources:
-                coordinates = resources.coordinates
-                if cluster_ids:
-                    coordinates = [
-                        c
-                        for c in coordinates
-                        if c.cluster_id in cluster_ids
-                    ]
-                yield from resources.extract_proteins_from_coordinates(
-                    coordinates,
-                    verbose=self.verbose,
-                )
-
-            progress.update(task, advance=1)
-
-        progress.remove_task(task)
-
-    def _log_protein_summary(
+    def extract_proteins(
         self,
         progress: rich.progress.Progress,
-        results: typing.Dict,
-        representatives: typing.Optional[typing.Container[str]],
-    ):
-        """Log summary of protein extraction results.
+        cluster_ids: typing.Collection[str],
+    ) -> typing.Iterable[Protein]:
 
-        Args:
-            progress: Rich progress bar instance.
-            results: Dictionary of extracted proteins.
-            representatives: Container of representative cluster IDs.
-        """
-        rep_count = "all"
-        if representatives:
-            if hasattr(representatives, "__len__"):
-                rep_count = str(len(representatives))
-            else:
-                rep_count = "specified"
-
-        progress.console.print(
-            f"[bold green]{'Extracted':>12}[/] {len(results):,} proteins from {rep_count} representative gene clusters"
-        )
+        for dataset in self.datasets:
+            yield from dataset.extract_proteins(progress, cluster_ids)
