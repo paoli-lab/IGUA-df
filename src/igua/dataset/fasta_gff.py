@@ -173,31 +173,104 @@ class SystemCoordinates:
         return cls(**data)
 
 
-class GFFIndex:
-    """Fast, in-memory GFF index for gene feature lookup.
 
-    Attributes:
-        path: Path to the GFF file.
-    """
-
-    def __init__(self, gff_path: pathlib.Path):
-        """Initialize GFF index.
-
+class IDResolver(typing.Protocol):
+    """Protocol for gene ID resolution strategies."""
+    
+    def __call__(self, gene_id: str, index: typing.Dict[str, typing.Dict]) -> typing.Optional[typing.Dict]:
+        """Resolve gene_id to GFF feature.
+        
         Args:
-            gff_path: Path to the GFF file.
+            gene_id: Gene identifier to resolve
+            index: Raw GFF index dictionary
+            
+        Returns:
+            Feature dict if found, None otherwise
+        """
+        ...
+
+
+def default_resolver(gene_id: str, index: typing.Dict[str, typing.Dict]) -> typing.Optional[typing.Dict]:
+    """Default resolution with common transformations."""
+    if result := index.get(gene_id):
+        return result
+    
+    for prefix in ["gene-", "cds-"]:
+        if result := index.get(f"{prefix}{gene_id}"):
+            return result
+    
+    for variant in [gene_id.replace("_", "~"), gene_id.replace("~", "_")]:
+        if result := index.get(variant):
+            return result
+
+
+def strict_resolver(gene_id: str, index: typing.Dict[str, typing.Dict]) -> typing.Optional[typing.Dict]:
+    """Strict resolver - only exact matches."""
+    return index.get(gene_id)
+
+
+def create_mapping_resolver(mapping: typing.Dict[str, str]) -> IDResolver:
+    """Factory for mapping-based resolvers.
+    
+    Args:
+        mapping: Dict mapping {fasta_id: gff_id}
+        
+    Returns:
+        Resolver function that uses the mapping
+    """
+    def resolver(gene_id: str, index: typing.Dict[str, typing.Dict]) -> typing.Optional[typing.Dict]:
+        gff_id = mapping.get(gene_id, gene_id)
+        return index.get(gff_id)
+    return resolver
+
+
+def create_transform_resolver(
+    transforms: typing.List[typing.Callable[[str], str]]
+) -> IDResolver:
+    """Factory for custom transformation resolvers.
+    
+    Args:
+        transforms: List of transformation functions to try
+        
+    Returns:
+        Resolver that tries each transformation in order
+    """
+    def resolver(gene_id: str, index: typing.Dict[str, typing.Dict]) -> typing.Optional[typing.Dict]:
+        if result := index.get(gene_id):
+            return result
+        for transform in transforms:
+            if result := index.get(transform(gene_id)):
+                return result
+        return None
+    return resolver
+
+
+class GFFIndex:
+    """Fast, in-memory GFF index for gene feature lookup."""
+
+    def __init__(
+        self,
+        gff_path: pathlib.Path,
+        resolver: typing.Optional[IDResolver] = None,
+        index_attributes: typing.Optional[typing.List[str]] = None,
+    ):
+        """Initialize GFF index.
+        
+        Args:
+            gff_path: Path to GFF file
+            resolver: Custom ID resolver (defaults to default_resolver)
+            index_attributes: Which GFF attributes to index
         """
         self.path = gff_path
         self._index: typing.Dict[str, typing.Dict] = {}
+        self.resolver = resolver or default_resolver
+        self.index_attributes = index_attributes or [
+            "ID", "locus_tag", "Name", "gene", "old_locus_tag", "protein_id"
+        ]
         self._build_index()
 
     def _build_index(self):
-        """Build comprehensive ID index from GFF file.
-
-        Creates multiple lookup variants for each gene/CDS feature
-        including ID, locus_tag, Name, gene, old_locus_tag, and
-        protein_id attributes. Also creates prefixed variants
-        (gene-, cds-) and underscore/tilde variants.
-        """
+        """Build index from GFF file."""
         with smart_open(self.path) as reader:
             for line in io.TextIOWrapper(reader, encoding="utf-8"):
                 if line.startswith("#") or not line.strip():
@@ -221,45 +294,17 @@ class GFFIndex:
                     "attributes": attr_dict,
                 }
 
-                for key in [
-                    "ID",
-                    "locus_tag",
-                    "Name",
-                    "gene",
-                    "old_locus_tag",
-                    "protein_id",
-                ]:
+                for key in self.index_attributes:
                     if val := attr_dict.get(key):
-                        for variant in [
-                            val,
-                            f"gene-{val}",
-                            f"cds-{val}",
-                            val.replace("_", "~"),
-                            val.replace("~", "_"),
-                        ]:
-                            self._index[variant] = feature
+                        self._index[val] = feature
 
     def get(self, gene_id: str) -> typing.Optional[typing.Dict]:
-        """Get feature by gene ID with O(1) lookup.
-
-        Args:
-            gene_id: Gene identifier to look up.
-
-        Returns:
-            Feature dictionary if found, None otherwise.
-        """
-        return self._index.get(gene_id)
+        """Get feature using configured resolver."""
+        return self.resolver(gene_id, self._index)
 
     def __contains__(self, gene_id: str) -> bool:
-        """Check if gene ID exists in index.
+        return self.get(gene_id) is not None
 
-        Args:
-            gene_id: Gene identifier to check.
-
-        Returns:
-            True if gene ID exists, False otherwise.
-        """
-        return gene_id in self._index
 
 
 class ProteinIndex:
@@ -324,23 +369,26 @@ class FastaGFFDataset(BaseDataset):
 
     def __init__(
         self,
-        cluster_table=pathlib.Path,
-        gff_file=pathlib.Path,
-        genome_fasta=pathlib.Path,
-        protein_fasta=pathlib.Path,
+        cluster_table: pathlib.Path,
+        gff_file: pathlib.Path,
+        genome_fasta: pathlib.Path,
+        protein_fasta: pathlib.Path,
         genome_id: typing.Optional[str] = None,
         column_mapping: typing.Optional[typing.Dict[str, str]] = None,
+        gff_resolver: typing.Optional[typing.Callable[[str, typing.Dict[str, typing.Dict]], typing.Optional[typing.Dict]]] = None,
+        gff_attributes: typing.Optional[typing.List[str]] = None, 
     ) -> None:
-        """Initialize the FastaGFFDataset class.
-
+        """Initialize FastaGFFDataset.
+        
         Args:
-            cluster_table: Path to the clusters table file.
-            gff_file: Path to the GFF file.
-            genome_fasta: Path to the genome FASTA file.
-            protein_fasta: Path to the protein FASTA file.
-            genome_id: Optional genome identifier. If None, a random ID is generated.
-            column_mapping: Custom column mapping. If None, uses
-                default generic mapping.
+            cluster_table: Path to clusters table
+            gff_file: Path to GFF file
+            genome_fasta: Path to genome FASTA
+            protein_fasta: Path to protein FASTA
+            genome_id: Optional genome identifier
+            column_mapping: Custom column mapping
+            gff_resolver: Custom GFF ID resolver function
+            gff_attributes: Which GFF attributes to index
         """
         super().__init__()
         self.genome_id = genome_id if genome_id else str(genome_fasta)
@@ -352,6 +400,8 @@ class FastaGFFDataset(BaseDataset):
             "cluster_id": "cluster_id",
             "genes_in_cluster": "genes_in_cluster",
         }
+        self._gff_resolver = gff_resolver
+        self._gff_attributes = gff_attributes
 
         self._cluster_df: typing.Optional[pd.DataFrame] = None
         self._protein_idx: typing.Optional[ProteinIndex] = None
@@ -361,9 +411,6 @@ class FastaGFFDataset(BaseDataset):
         self.is_valid = self._is_valid()
         if not self.is_valid:
             raise FileNotFoundError(f"Missing files for genome {self.genome_id}")
-
-
-        # self.cluster_df
 
     def _is_valid(self) -> bool:
         """Check if all required files exist.
@@ -379,8 +426,12 @@ class FastaGFFDataset(BaseDataset):
                 (self.genome_fasta, "genome_fasta"),
                 (self.protein_fasta, "protein_fasta"),
             ]
-            if not Path(fpath).exists() and "tar.gz" not in str(fpath)
+            if not fpath.exists() and "tar.gz" not in str(fpath)
         ]
+        # logger.info(
+        #     f"Validation for genome {self.genome_id}: "
+        #     f"{'All files found' if not self.missing_files else 'Missing files: ' + ', '.join(self.missing_files)}"
+        # )
         return len(self.missing_files) == 0
 
     def _load_and_filter_clusters(
@@ -444,13 +495,13 @@ class FastaGFFDataset(BaseDataset):
 
     @property
     def gff_db(self) -> GFFIndex:
-        """Get GFF index.
-
-        Returns:
-            GFFIndex instance.
-        """
+        """Get GFF index with configured resolver."""
         if self._gff_db is None:
-            self._gff_db = GFFIndex(self.gff_file)
+            self._gff_db = GFFIndex(
+                self.gff_file,
+                resolver=self._gff_resolver,
+                index_attributes=self._gff_attributes,
+            )
         return self._gff_db
 
     @property
