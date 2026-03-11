@@ -89,14 +89,8 @@ class CustomTSVDataset(BaseDataset):
         self.gff_attributes = gff_attributes
         self.genome_id_column = genome_id_column
 
-        self.metadata_df = pd.read_csv(metadata_tsv, sep="\t")
-
+        self.metadata_df = pd.read_csv(metadata_tsv, sep="\t").sort_values("genome_id")
         self.clusters_df = pd.read_csv(clusters_tsv, sep="\t")
-
-        self.genome_masks = {
-            genome_id: (self.clusters_df[genome_id_column] == genome_id)
-            for genome_id in self.clusters_df[genome_id_column].unique()
-        }
 
         self.datasets = self._create_datasets(progress)
 
@@ -106,41 +100,35 @@ class CustomTSVDataset(BaseDataset):
         """Create one dataset per genome with shared DataFrame."""
         datasets = []
 
-        metadata_index = self.metadata_df.set_index("genome_id")
-        sorted_genomes = sorted(self.genome_masks.keys())
-
         task_id = None
         if progress:
             task_id = progress.add_task(
-                "Creating datasets...", total=len(sorted_genomes)
+                "Creating datasets...", total=len(self.metadata_df)
             )
 
-        for genome_id in sorted_genomes:
-            if genome_id not in metadata_index.index:
+        for _, row in self.metadata_df.iterrows():
+            genome_id = row["genome_id"]
+            genome_mask = self.clusters_df[self.genome_id_column] == genome_id
+
+            if not genome_mask.any():
                 if progress and task_id:
                     progress.console.print(
-                        f"[yellow]Warning:[/] Genome {genome_id} not in metadata, skipping"
+                        f"[yellow]Warning:[/] No clusters found for {genome_id}, skipping"
                     )
                     progress.update(task_id, advance=1)
                 continue
 
-            metadata_row = metadata_index.loc[genome_id]
-
-            try:
-                dataset = InMemoryClusterDataset(
-                    clusters_df=self.clusters_df,
-                    genome_id=genome_id,
-                    genome_mask=self.genome_masks[genome_id],
-                    gff_file=pathlib.Path(metadata_row["gff_file"]),
-                    genome_fasta=pathlib.Path(metadata_row["genome_fasta_file"]),
-                    protein_fasta=pathlib.Path(metadata_row["protein_fasta_file"]),
-                    gff_resolver=self.gff_resolver,
-                    gff_attributes=self.gff_attributes,
-                )
-                datasets.append(dataset)
-            except FileNotFoundError as e:
-                if progress and task_id:
-                    progress.console.print(f"[red]Error:[/] {genome_id}: {e}")
+            dataset = InMemoryClusterDataset(
+                clusters_df=self.clusters_df,
+                genome_id=genome_id,
+                genome_mask=genome_mask,
+                gff_file=pathlib.Path(row["gff_file"]),
+                genome_fasta=pathlib.Path(row["genome_fasta_file"]),
+                protein_fasta=pathlib.Path(row["protein_fasta_file"]),
+                gff_resolver=self.gff_resolver,
+                gff_attributes=self.gff_attributes,
+            )
+            datasets.append(dataset)
 
             if progress and task_id:
                 progress.update(task_id, advance=1)
