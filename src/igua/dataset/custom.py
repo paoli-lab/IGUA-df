@@ -58,6 +58,19 @@ class InMemoryClusterDataset(FastaGFFDataset):
         """Return view of the shared DataFrame for this genome."""
         return self._full_clusters_df[self._genome_mask]
 
+    def cleanup_indexes(self):
+        """Free memory by clearing heavy index objects after extraction."""
+        if self._gff_db is not None:
+            del self._gff_db
+            self._gff_db = None
+        
+        if self._coordinates is not None:
+            del self._coordinates
+            self._coordinates = None
+        
+        if self._protein_idx is not None:
+            del self._protein_idx
+            self._protein_idx = None
 
 class CustomTSVDataset(BaseDataset):
     """Dataset that loads clusters once and distributes across genome-specific datasets."""
@@ -144,6 +157,7 @@ class CustomTSVDataset(BaseDataset):
         """Extract clusters from all datasets."""
         for dataset in self.datasets:
             yield from dataset.extract_clusters(progress=progress)
+            dataset.cleanup_indexes()
 
     def extract_proteins(
         self,
@@ -153,3 +167,4 @@ class CustomTSVDataset(BaseDataset):
         """Extract proteins from all datasets."""
         for dataset in self.datasets:
             yield from dataset.extract_proteins(progress, cluster_ids)
+            dataset.cleanup_indexes()
