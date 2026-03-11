@@ -14,7 +14,7 @@ class InMemoryClusterDataset(FastaGFFDataset):
 
     def __init__(
         self,
-        clusters_df: pd.DataFrame, 
+        clusters_df: pd.DataFrame,
         genome_id: str,
         genome_mask: pd.Series,
         gff_file: pathlib.Path,
@@ -24,7 +24,7 @@ class InMemoryClusterDataset(FastaGFFDataset):
         gff_attributes: typing.Optional[typing.List[str]] = None,
     ) -> None:
         """Initialize with shared DataFrame and boolean mask.
-        
+
         Args:
             clusters_df: The FULL clusters DataFrame (shared across all datasets)
             genome_id: Genome identifier
@@ -37,7 +37,7 @@ class InMemoryClusterDataset(FastaGFFDataset):
         """
         self._full_clusters_df = clusters_df
         self._genome_mask = genome_mask
-        
+
         self.genome_id = genome_id
         self.gff_file = gff_file
         self.genome_fasta = genome_fasta
@@ -48,30 +48,11 @@ class InMemoryClusterDataset(FastaGFFDataset):
         }
         self._gff_resolver = gff_resolver
         self._gff_attributes = gff_attributes
-        
+
         self._protein_idx = None
         self._gff_db = None
         self._coordinates = None
-        
-        self.is_valid = self._validate_files()
-        if not self.is_valid:
-            raise FileNotFoundError(
-                f"Missing files for genome {genome_id}: {self.missing_files}"
-            )
-    
-    def _validate_files(self) -> bool:
-        """Check only GFF and FASTA files exist."""
-        self.missing_files = [
-            f"{name}: {fpath}"
-            for fpath, name in [
-                (self.gff_file, "gff_file"),
-                (self.genome_fasta, "genome_fasta"),
-                (self.protein_fasta, "protein_fasta"),
-            ]
-            if not fpath.exists()
-        ]
-        return len(self.missing_files) == 0
-    
+
     @property
     def cluster_df(self) -> pd.DataFrame:
         """Return view of the shared DataFrame for this genome."""
@@ -91,7 +72,7 @@ class CustomTSVDataset(BaseDataset):
         progress: typing.Optional[rich.progress.Progress] = None,
     ):
         """Initialize with cluster and metadata TSV files.
-        
+
         Args:
             clusters_tsv: Path to clusters TSV (e.g., DefenseFinder systems)
             metadata_tsv: Path to metadata TSV with genome file paths
@@ -101,50 +82,39 @@ class CustomTSVDataset(BaseDataset):
             progress: Optional progress bar
         """
         super().__init__()
-        
+
         self.clusters_tsv = clusters_tsv
         self.metadata_tsv = metadata_tsv
         self.gff_resolver = gff_resolver
         self.gff_attributes = gff_attributes
         self.genome_id_column = genome_id_column
-        
+
         self.metadata_df = pd.read_csv(metadata_tsv, sep="\t")
-        self._validate_metadata()
-        
+
         self.clusters_df = pd.read_csv(clusters_tsv, sep="\t")
-        
+
         self.genome_masks = {
             genome_id: (self.clusters_df[genome_id_column] == genome_id)
             for genome_id in self.clusters_df[genome_id_column].unique()
         }
-        
+
         self.datasets = self._create_datasets(progress)
-    
-    def _validate_metadata(self):
-        """Validate metadata has required columns."""
-        required = {"genome_id", "gff_file", "genome_fasta_file", "protein_fasta_file"}
-        missing = required - set(self.metadata_df.columns)
-        if missing:
-            raise ValueError(f"Metadata TSV missing columns: {missing}")
-    
+
     def _create_datasets(
-        self, 
-        progress: typing.Optional[rich.progress.Progress] = None
+        self, progress: typing.Optional[rich.progress.Progress] = None
     ) -> typing.List[InMemoryClusterDataset]:
         """Create one dataset per genome with shared DataFrame."""
         datasets = []
-        
+
         metadata_index = self.metadata_df.set_index("genome_id")
-        
         sorted_genomes = sorted(self.genome_masks.keys())
-        
+
         task_id = None
         if progress:
             task_id = progress.add_task(
-                "Creating datasets...", 
-                total=len(sorted_genomes)
+                "Creating datasets...", total=len(sorted_genomes)
             )
-        
+
         for genome_id in sorted_genomes:
             if genome_id not in metadata_index.index:
                 if progress and task_id:
@@ -153,9 +123,9 @@ class CustomTSVDataset(BaseDataset):
                     )
                     progress.update(task_id, advance=1)
                 continue
-            
+
             metadata_row = metadata_index.loc[genome_id]
-            
+
             try:
                 dataset = InMemoryClusterDataset(
                     clusters_df=self.clusters_df,
@@ -170,26 +140,23 @@ class CustomTSVDataset(BaseDataset):
                 datasets.append(dataset)
             except FileNotFoundError as e:
                 if progress and task_id:
-                    progress.console.print(
-                        f"[red]Error:[/] {genome_id}: {e}"
-                    )
-            
+                    progress.console.print(f"[red]Error:[/] {genome_id}: {e}")
+
             if progress and task_id:
                 progress.update(task_id, advance=1)
-        
+
         if progress and task_id:
             progress.remove_task(task_id)
-        
+
         return datasets
-    
+
     def extract_clusters(
-        self, 
-        progress: typing.Optional[rich.progress.Progress] = None
+        self, progress: typing.Optional[rich.progress.Progress] = None
     ) -> typing.Iterable[Cluster]:
         """Extract clusters from all datasets."""
         for dataset in self.datasets:
             yield from dataset.extract_clusters(progress=progress)
-    
+
     def extract_proteins(
         self,
         progress: typing.Optional[rich.progress.Progress] = None,
