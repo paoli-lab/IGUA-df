@@ -14,29 +14,27 @@ class InMemoryClusterDataset(FastaGFFDataset):
 
     def __init__(
         self,
-        clusters_df: pd.DataFrame,
+        clusters_grouped: pd.core.groupby.DataFrameGroupBy,
         genome_id: str,
-        genome_mask: pd.Series,
         gff_file: pathlib.Path,
         genome_fasta: pathlib.Path,
         protein_fasta: pathlib.Path,
         gff_resolver: typing.Optional[IDResolver] = None,
         gff_attributes: typing.Optional[typing.List[str]] = None,
     ) -> None:
-        """Initialize with shared DataFrame and boolean mask.
+        """Initialize with grouped DataFrame reference.
 
         Args:
-            clusters_df: The FULL clusters DataFrame (shared across all datasets)
+            clusters_grouped: Grouped clusters DataFrame (shared reference)
             genome_id: Genome identifier
-            genome_mask: Boolean mask selecting rows for this genome
             gff_file: Path to GFF file
             genome_fasta: Path to genome FASTA
             protein_fasta: Path to protein FASTA
             gff_resolver: Custom GFF ID resolver
             gff_attributes: GFF attributes to index
         """
-        self._full_clusters_df = clusters_df
-        self._genome_mask = genome_mask
+        self._clusters_grouped = clusters_grouped
+        self._genome_id_key = genome_id
 
         self.genome_id = genome_id
         self.gff_file = gff_file
@@ -49,14 +47,18 @@ class InMemoryClusterDataset(FastaGFFDataset):
         self._gff_resolver = gff_resolver
         self._gff_attributes = gff_attributes
 
+        self._cluster_df_cache = None  # Cache the extracted group
         self._protein_idx = None
         self._gff_db = None
         self._coordinates = None
 
     @property
     def cluster_df(self) -> pd.DataFrame:
-        """Return view of the shared DataFrame for this genome."""
-        return self._full_clusters_df[self._genome_mask]
+        """Return view of the grouped DataFrame for this genome."""
+        if self._cluster_df_cache is None:
+            # Extract group only when needed - this is a view, not a copy
+            self._cluster_df_cache = self._clusters_grouped.get_group(self._genome_id_key)
+        return self._cluster_df_cache
 
     def cleanup_indexes(self):
         """Free memory by clearing heavy index objects after extraction."""
@@ -71,6 +73,11 @@ class InMemoryClusterDataset(FastaGFFDataset):
         if self._protein_idx is not None:
             del self._protein_idx
             self._protein_idx = None
+        
+        # Also clear the cached DataFrame view
+        if self._cluster_df_cache is not None:
+            del self._cluster_df_cache
+            self._cluster_df_cache = None
 
 class CustomTSVDataset(BaseDataset):
     """Dataset that loads clusters once and distributes across genome-specific datasets."""
@@ -104,6 +111,9 @@ class CustomTSVDataset(BaseDataset):
 
         self.metadata_df = pd.read_csv(metadata_tsv, sep="\t").sort_values("genome_id")
         self.clusters_df = pd.read_csv(clusters_tsv, sep="\t")
+        
+        # Group once - pandas creates internal index, no data copying
+        self.clusters_grouped = self.clusters_df.groupby(genome_id_column)
 
         self.datasets = self._create_datasets(progress)
 
@@ -121,9 +131,9 @@ class CustomTSVDataset(BaseDataset):
 
         for _, row in self.metadata_df.iterrows():
             genome_id = row["genome_id"]
-            genome_mask = self.clusters_df[self.genome_id_column] == genome_id
-
-            if not genome_mask.any():
+            
+            # Check if this genome has any clusters
+            if genome_id not in self.clusters_grouped.groups:
                 if progress and task_id:
                     progress.console.print(
                         f"[yellow]Warning:[/] No clusters found for {genome_id}, skipping"
@@ -132,9 +142,8 @@ class CustomTSVDataset(BaseDataset):
                 continue
 
             dataset = InMemoryClusterDataset(
-                clusters_df=self.clusters_df,
+                clusters_grouped=self.clusters_grouped,
                 genome_id=genome_id,
-                genome_mask=genome_mask,
                 gff_file=pathlib.Path(row["gff_file"]),
                 genome_fasta=pathlib.Path(row["genome_fasta_file"]),
                 protein_fasta=pathlib.Path(row["protein_fasta_file"]),
