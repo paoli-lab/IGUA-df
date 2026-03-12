@@ -4,6 +4,7 @@ import io
 import logging
 import pathlib
 import re
+import sys
 import typing
 import warnings
 from pathlib import Path
@@ -14,6 +15,43 @@ from rich.logging import RichHandler
 import rich.progress
 
 from .base import BaseDataset, Cluster, Protein
+
+try:
+    from .custom import MemoryProfiler
+except ImportError:
+    try:
+        import psutil
+        PSUTIL_AVAILABLE = True
+    except ImportError:
+        PSUTIL_AVAILABLE = False
+    
+    class MemoryProfiler:
+        """Minimal profiler fallback."""
+        def __init__(self, enabled: bool = True, console=None):
+            self.enabled = enabled and PSUTIL_AVAILABLE
+            self.console = console
+            self._checkpoints = {}
+        
+        def get_memory_mb(self) -> float:
+            if not self.enabled:
+                return 0.0
+            process = psutil.Process()
+            return process.memory_info().rss / 1024 / 1024
+        
+        @staticmethod
+        def format_memory_mb(mb: float) -> str:
+            if mb >= 1024:
+                return f"{mb/1024:.2f} GB"
+            return f"{mb:.2f} MB"
+        
+        def log(self, message: str, style: str = "cyan"):
+            if not self.enabled:
+                return
+            formatted = f"[{style}]{message}[/]" if style else message
+            if self.console and hasattr(self.console, 'print'):
+                self.console.print(formatted)
+            else:
+                print(formatted)
 
 
 _GZIP_MAGIC = b"\x1f\x8b"
@@ -33,8 +71,6 @@ file_handler.setFormatter(
     logging.Formatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s")
 )
 logger.addHandler(file_handler)
-
-# logging.getLogger("igua.dataset.fasta_gff").setLevel(logging.INFO)
 
 
 def _parse_tar_path(
@@ -253,6 +289,7 @@ class GFFIndex:
         gff_path: pathlib.Path,
         resolver: typing.Optional[IDResolver] = None,
         index_attributes: typing.Optional[typing.List[str]] = None,
+        profiler: typing.Optional[MemoryProfiler] = None,
     ):
         """Initialize GFF index.
         
@@ -260,6 +297,7 @@ class GFFIndex:
             gff_path: Path to GFF file
             resolver: Custom ID resolver (defaults to default_resolver)
             index_attributes: Which GFF attributes to index
+            profiler: Optional memory profiler
         """
         self.path = gff_path
         self._index: typing.Dict[str, typing.Dict] = {}
@@ -267,10 +305,13 @@ class GFFIndex:
         self.index_attributes = index_attributes or [
             "ID", "locus_tag", "Name", "gene", "old_locus_tag", "protein_id"
         ]
+        self.profiler = profiler or MemoryProfiler(enabled=False)
         self._build_index()
 
     def _build_index(self):
         """Build index from GFF file."""
+        mem_before = self.profiler.get_memory_mb()
+        
         with smart_open(self.path) as reader:
             for line in io.TextIOWrapper(reader, encoding="utf-8"):
                 if line.startswith("#") or not line.strip():
@@ -297,6 +338,17 @@ class GFFIndex:
                 for key in self.index_attributes:
                     if val := attr_dict.get(key):
                         self._index[val] = feature
+        
+        if self.profiler.enabled:
+            mem_after = self.profiler.get_memory_mb()
+            index_size = sys.getsizeof(self._index) / 1024 / 1024
+            self.profiler.log(
+                f"  GFF index built: {len(self._index)} entries, "
+                f"~{self.profiler.format_memory_mb(index_size)} "
+                f"(process: {self.profiler.format_memory_mb(mem_after)}, "
+                f"Δ{self.profiler.format_memory_mb(mem_after - mem_before)})",
+                "dim cyan"
+            )
 
     def get(self, gene_id: str) -> typing.Optional[typing.Dict]:
         """Get feature using configured resolver."""
@@ -310,15 +362,21 @@ class GFFIndex:
 class ProteinIndex:
     """Lazy-loading protein sequence index for efficient lookup."""
 
-    def __init__(self, protein_fasta: pathlib.Path):
+    def __init__(
+        self, 
+        protein_fasta: pathlib.Path,
+        profiler: typing.Optional[MemoryProfiler] = None,
+    ):
         """Initialize protein index without loading sequences.
 
         Args:
             protein_fasta: Path to protein FASTA file.
+            profiler: Optional memory profiler.
         """
         self.path = protein_fasta
         self._sequences: typing.Dict[str, str] = {}
         self._loaded = False
+        self.profiler = profiler or MemoryProfiler(enabled=False)
 
     def _ensure_loaded(self, gene_ids: typing.Optional[set] = None):
         """Load protein sequences on demand.
@@ -328,6 +386,8 @@ class ProteinIndex:
         """
         if self._loaded:
             return
+
+        mem_before = self.profiler.get_memory_mb()
 
         for seq_id, full_header, sequence in read_fasta(self.path):
             if gene_ids is None or seq_id in gene_ids:
@@ -341,6 +401,17 @@ class ProteinIndex:
                             self._sequences[attr_value] = sequence
 
         self._loaded = True
+        
+        if self.profiler.enabled:
+            mem_after = self.profiler.get_memory_mb()
+            total_seq_size = sum(len(seq) for seq in self._sequences.values()) / 1024 / 1024
+            self.profiler.log(
+                f"  Protein sequences loaded: {len(self._sequences)} proteins, "
+                f"~{self.profiler.format_memory_mb(total_seq_size)} sequence data "
+                f"(process: {self.profiler.format_memory_mb(mem_after)}, "
+                f"Δ{self.profiler.format_memory_mb(mem_after - mem_before)})",
+                "dim cyan"
+            )
 
     def load_subset(self, gene_ids: set):
         """Pre-load only specific proteins by ID.
@@ -376,7 +447,8 @@ class FastaGFFDataset(BaseDataset):
         genome_id: typing.Optional[str] = None,
         column_mapping: typing.Optional[typing.Dict[str, str]] = None,
         gff_resolver: typing.Optional[typing.Callable[[str, typing.Dict[str, typing.Dict]], typing.Optional[typing.Dict]]] = None,
-        gff_attributes: typing.Optional[typing.List[str]] = None, 
+        gff_attributes: typing.Optional[typing.List[str]] = None,
+        profiler: typing.Optional[MemoryProfiler] = None,
     ) -> None:
         """Initialize FastaGFFDataset.
         
@@ -389,6 +461,7 @@ class FastaGFFDataset(BaseDataset):
             column_mapping: Custom column mapping
             gff_resolver: Custom GFF ID resolver function
             gff_attributes: Which GFF attributes to index
+            profiler: Optional memory profiler
         """
         super().__init__()
         self.genome_id = genome_id if genome_id else str(genome_fasta)
@@ -402,6 +475,7 @@ class FastaGFFDataset(BaseDataset):
         }
         self._gff_resolver = gff_resolver
         self._gff_attributes = gff_attributes
+        self.profiler = profiler or MemoryProfiler(enabled=False)
 
         self._cluster_df: typing.Optional[pd.DataFrame] = None
         self._protein_idx: typing.Optional[ProteinIndex] = None
@@ -428,10 +502,6 @@ class FastaGFFDataset(BaseDataset):
             ]
             if not fpath.exists() and "tar.gz" not in str(fpath)
         ]
-        # logger.info(
-        #     f"Validation for genome {self.genome_id}: "
-        #     f"{'All files found' if not self.missing_files else 'Missing files: ' + ', '.join(self.missing_files)}"
-        # )
         return len(self.missing_files) == 0
 
     def _load_and_filter_clusters(
@@ -442,14 +512,27 @@ class FastaGFFDataset(BaseDataset):
         Args:
             cluster_table_path: Path to clusters TSV.
             use_columns: List of columns to use from the TSV.
-            console: Rich console for logging.
 
         Returns:
             Pandas DataFrame with cluster data.
         """
+        mem_before = self.profiler.get_memory_mb()
+        
         df = pd.read_csv(
             cluster_table_path, sep="\t", usecols=use_columns, low_memory=True
         )
+        
+        if self.profiler.enabled:
+            mem_after = self.profiler.get_memory_mb()
+            df_size = df.memory_usage(deep=True).sum() / 1024 / 1024
+            self.profiler.log(
+                f"  Cluster table loaded: {len(df)} rows, "
+                f"{self.profiler.format_memory_mb(df_size)} "
+                f"(process: {self.profiler.format_memory_mb(mem_after)}, "
+                f"Δ{self.profiler.format_memory_mb(mem_after - mem_before)})",
+                "dim cyan"
+            )
+        
         return df
 
     @property
@@ -490,7 +573,10 @@ class FastaGFFDataset(BaseDataset):
             ProteinIndex instance.
         """
         if self._protein_idx is None:
-            self._protein_idx = ProteinIndex(self.protein_fasta)
+            self._protein_idx = ProteinIndex(
+                self.protein_fasta,
+                profiler=self.profiler,
+            )
         return self._protein_idx
 
     @property
@@ -501,6 +587,7 @@ class FastaGFFDataset(BaseDataset):
                 self.gff_file,
                 resolver=self._gff_resolver,
                 index_attributes=self._gff_attributes,
+                profiler=self.profiler,
             )
         return self._gff_db
 
@@ -521,10 +608,24 @@ class FastaGFFDataset(BaseDataset):
         Returns:
             List of SystemCoordinates for each cluster.
         """
+        mem_before = self.profiler.get_memory_mb()
+        
         coordinates = []
         for _, row in self.cluster_df.iterrows():
             coord = self._parse_cluster_coordinates(row)
             coordinates.append(coord)
+        
+        if self.profiler.enabled:
+            mem_after = self.profiler.get_memory_mb()
+            coord_size = sys.getsizeof(coordinates) / 1024
+            self.profiler.log(
+                f"  Coordinates built: {len(coordinates)} clusters, "
+                f"~{coord_size:.2f} KB "
+                f"(process: {self.profiler.format_memory_mb(mem_after)}, "
+                f"Δ{self.profiler.format_memory_mb(mem_after - mem_before)})",
+                "dim cyan"
+            )
+        
         return coordinates
 
     def _parse_cluster_coordinates(self, row: dict) -> SystemCoordinates:
@@ -612,7 +713,6 @@ class FastaGFFDataset(BaseDataset):
             Invalid SystemCoordinates instance with error message.
         """
 
-        # ? raise warning and contiune instead of returning empty coords?
         logger.warning(
             f"{error} for cluster {cluster_id} (genome: [bold cyan]{self.genome_id}[/])"
         )
@@ -635,23 +735,15 @@ class FastaGFFDataset(BaseDataset):
 
         Streams FASTA file to minimize memory usage.
 
-        Args:
-            output: Output sink for writing records.
-
         Returns:
-            List of (cluster_id, sequence_length, fasta_file) tuples.
+            Iterator of Cluster objects.
         """
-        # builds coordinates
-        # iterates over rows of cluster_df
-        # parses coordinates using gff_db
-        # so gets genes + builds gff_df
-        # validates coordinates (genes exist, on same contig, cluster size etc)
         coordinates = self.coordinates
         valid_coords = [c for c in coordinates if c.valid]
 
         if not valid_coords:
             logger.warning(f"No valid clusters to extract for {self.genome_id}")
-            return []
+            return
 
         contig_groups: collections.defaultdict[str, typing.List[SystemCoordinates]] = (
             collections.defaultdict(list)
@@ -665,6 +757,9 @@ class FastaGFFDataset(BaseDataset):
             f"[bold blue]Processing[/] {len(valid_coords)} clusters across {num_contigs} contigs (genome: [bold cyan]{self.genome_id}[/])"
         )
 
+        mem_before = self.profiler.get_memory_mb()
+        total_seq_length = 0
+
         for seq_id, _, sequence in read_fasta(self.genome_fasta):
             if seq_id not in contig_groups:
                 continue
@@ -675,6 +770,7 @@ class FastaGFFDataset(BaseDataset):
 
             for coord in contig_groups[seq_id]:
                 subseq = sequence[coord.start_coord - 1 : coord.end_coord]
+                total_seq_length += len(subseq)
                 yield Cluster(coord.cluster_id, subseq, source=coord.fasta_file)
 
             logger.debug(
@@ -685,6 +781,16 @@ class FastaGFFDataset(BaseDataset):
 
             if not contig_groups:
                 break
+
+        if self.profiler.enabled:
+            mem_after = self.profiler.get_memory_mb()
+            self.profiler.log(
+                f"  Genome extraction: {len(valid_coords)} clusters, "
+                f"{total_seq_length:,} total bp extracted "
+                f"(process: {self.profiler.format_memory_mb(mem_after)}, "
+                f"Δ{self.profiler.format_memory_mb(mem_after - mem_before)})",
+                "dim cyan"
+            )
 
         if contig_groups:
             for seq_id in contig_groups:
@@ -698,10 +804,9 @@ class FastaGFFDataset(BaseDataset):
 
         Args:
             coordinates: List of cluster coordinates.
-            output_file: Output file handle for writing sequences.
 
         Returns:
-            Dictionary mapping protein_id to sequence length.
+            Iterator of Protein objects.
         """
         valid_coords = [c for c in coordinates if c.valid]
 
@@ -713,6 +818,8 @@ class FastaGFFDataset(BaseDataset):
         for coord in valid_coords:
             all_gene_ids.update(coord.genes)
 
+        mem_before = self.profiler.get_memory_mb()
+        
         self.protein_idx.load_subset(all_gene_ids)
 
         total_genes = len(all_gene_ids)
@@ -722,10 +829,13 @@ class FastaGFFDataset(BaseDataset):
         )
 
         n_extracted = 0
+        total_protein_length = 0
+        
         for coord in valid_coords:
             for gene_id in coord.genes:
                 if seq := self.protein_idx.get(gene_id):
                     protein_id = f"{coord.cluster_id}__{gene_id}"
+                    total_protein_length += len(seq)
                     yield Protein(
                         protein_id,
                         seq,
@@ -736,6 +846,16 @@ class FastaGFFDataset(BaseDataset):
                     logger.warning(
                         f"Protein {gene_id} not found for cluster {coord.cluster_id} (genome: [bold cyan]{self.genome_id}[/])"
                     )
+
+        if self.profiler.enabled:
+            mem_after = self.profiler.get_memory_mb()
+            self.profiler.log(
+                f"  Protein extraction: {n_extracted} proteins, "
+                f"{total_protein_length:,} total aa extracted "
+                f"(process: {self.profiler.format_memory_mb(mem_after)}, "
+                f"Δ{self.profiler.format_memory_mb(mem_after - mem_before)})",
+                "dim cyan"
+            )
 
         logger.info(
             f"[bold green]Extracted[/] {n_extracted} proteins from {len(coordinates)} clusters (genome: [bold cyan]{self.genome_id}[/])"
@@ -791,12 +911,28 @@ class MetadataTSVDataset(BaseDataset):
         cluster_metadata_table: pathlib.Path,
         column_mapping: typing.Optional[typing.Dict[str, str]] = None,
         progress: rich.progress.Progress = None,
+        profiler: typing.Optional[MemoryProfiler] = None,
     ):
         self.cluster_metadata_table: pathlib.Path = cluster_metadata_table
         self.column_mapping = column_mapping
         self.progress = progress
+        self.profiler = profiler if profiler is not None else MemoryProfiler(
+            enabled=True,
+            console=progress.console if progress else None
+        )
+
+        mem_before = self.profiler.get_memory_mb()
 
         self.cluster_metadata_df = pd.read_csv(self.cluster_metadata_table, sep="\t")
+
+        if self.profiler.enabled:
+            mem_after = self.profiler.get_memory_mb()
+            self.profiler.log(
+                f"Metadata table loaded: {len(self.cluster_metadata_df)} genomes "
+                f"(process: {self.profiler.format_memory_mb(mem_after)}, "
+                f"Δ{self.profiler.format_memory_mb(mem_after - mem_before)})",
+                "cyan"
+            )
 
         logger.info(
             f"Using cluster metadata table: [magenta]{str(self.cluster_metadata_table)}[/]"
@@ -810,17 +946,27 @@ class MetadataTSVDataset(BaseDataset):
                 protein_fasta=pathlib.Path(row["protein_fasta_file"]),
                 column_mapping=column_mapping,
                 genome_id=row.get("genome_id", None),
+                profiler=self.profiler,
             )
             for _, row in self.cluster_metadata_df.iterrows()
         ]
-        pass
 
     def extract_clusters(
         self, progress: rich.progress.Progress
     ) -> typing.Iterable[Cluster]:
 
+        mem_start = self.profiler.get_memory_mb()
+
         for dataset in self.datasets:
             yield from dataset.extract_clusters(progress=progress)
+
+        if self.profiler.enabled:
+            mem_end = self.profiler.get_memory_mb()
+            self.profiler.log(
+                f"Total cluster extraction complete: {self.profiler.format_memory_mb(mem_end)} "
+                f"(Δ{self.profiler.format_memory_mb(mem_end - mem_start)})",
+                "cyan"
+            )
 
     def extract_proteins(
         self,
@@ -828,5 +974,15 @@ class MetadataTSVDataset(BaseDataset):
         cluster_ids: typing.Collection[str],
     ) -> typing.Iterable[Protein]:
 
+        mem_start = self.profiler.get_memory_mb()
+
         for dataset in self.datasets:
             yield from dataset.extract_proteins(progress, cluster_ids)
+
+        if self.profiler.enabled:
+            mem_end = self.profiler.get_memory_mb()
+            self.profiler.log(
+                f"Total protein extraction complete: {self.profiler.format_memory_mb(mem_end)} "
+                f"(Δ{self.profiler.format_memory_mb(mem_end - mem_start)})",
+                "cyan"
+            )
