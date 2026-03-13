@@ -47,7 +47,7 @@ class InMemoryClusterDataset(FastaGFFDataset):
         self._gff_resolver = gff_resolver
         self._gff_attributes = gff_attributes
 
-        self._cluster_df_cache = None  # Cache the extracted group
+        self._cluster_df_cache = None
         self._protein_idx = None
         self._gff_db = None
         self._coordinates = None
@@ -56,7 +56,6 @@ class InMemoryClusterDataset(FastaGFFDataset):
     def cluster_df(self) -> pd.DataFrame:
         """Return view of the grouped DataFrame for this genome."""
         if self._cluster_df_cache is None:
-            # Extract group only when needed - this is a view, not a copy
             self._cluster_df_cache = self._clusters_grouped.get_group(self._genome_id_key)
         return self._cluster_df_cache
 
@@ -74,7 +73,6 @@ class InMemoryClusterDataset(FastaGFFDataset):
             del self._protein_idx
             self._protein_idx = None
         
-        # Also clear the cached DataFrame view
         if self._cluster_df_cache is not None:
             del self._cluster_df_cache
             self._cluster_df_cache = None
@@ -109,55 +107,46 @@ class CustomTSVDataset(BaseDataset):
         self.gff_attributes = gff_attributes
         self.genome_id_column = genome_id_column
 
-        self.metadata_df = pd.read_csv(metadata_tsv, sep="\t").sort_values("genome_id")
-        self.clusters_df = pd.read_csv(clusters_tsv, sep="\t")
-        
-        # Group once - pandas creates internal index, no data copying
-        self.clusters_grouped = self.clusters_df.groupby(genome_id_column)
+        self.metadata_df = pd.read_csv(metadata_tsv, sep="\t", usecols=['genome_id','genome_fasta_file', 'gff_file', 'protein_fasta_file'], dtype={'genome_id': 'str', 'gff_file': 'str', 'genome_fasta_file': 'str', 'protein_fasta_file': 'str'}).sort_values("genome_id")
+        self.metadata_df['gff_path'] = self.metadata_df['gff_file'].apply(pathlib.Path)
+        self.metadata_df['genome_fasta_path'] = self.metadata_df['genome_fasta_file'].apply(pathlib.Path)
+        self.metadata_df['protein_fasta_path'] = self.metadata_df['protein_fasta_file'].apply(pathlib.Path)
 
+        self.clusters_df = pd.read_csv(clusters_tsv, sep="\t", usecols=['#genome', 'sys_id', 'protein_in_syst'])
+        
+        self.clusters_grouped = self.clusters_df.groupby(genome_id_column)
         self.datasets = self._create_datasets(progress)
 
     def _create_datasets(
         self, progress: typing.Optional[rich.progress.Progress] = None
     ) -> typing.List[InMemoryClusterDataset]:
         """Create one dataset per genome with shared DataFrame."""
-        datasets = []
-
+        
+        n_genomes = len(self.metadata_df)
+        datasets = [None] * n_genomes
+        
         task_id = None
         if progress:
-            task_id = progress.add_task(
-                "Creating datasets...", total=len(self.metadata_df)
-            )
-
-        for _, row in self.metadata_df.iterrows():
-            genome_id = row["genome_id"]
-            
-            # Check if this genome has any clusters
-            if genome_id not in self.clusters_grouped.groups:
-                if progress and task_id:
-                    progress.console.print(
-                        f"[yellow]Warning:[/] No clusters found for {genome_id}, skipping"
-                    )
-                    progress.update(task_id, advance=1)
-                continue
-
-            dataset = InMemoryClusterDataset(
+            task_id = progress.add_task("Creating datasets...", total=n_genomes)
+        
+        for idx, row in enumerate(self.metadata_df.itertuples()):
+            datasets[idx] = InMemoryClusterDataset(
                 clusters_grouped=self.clusters_grouped,
-                genome_id=genome_id,
-                gff_file=pathlib.Path(row["gff_file"]),
-                genome_fasta=pathlib.Path(row["genome_fasta_file"]),
-                protein_fasta=pathlib.Path(row["protein_fasta_file"]),
+                genome_id=row.genome_id,
+                gff_file=row.gff_path,
+                genome_fasta=row.genome_fasta_path,
+                protein_fasta=row.protein_fasta_path,
                 gff_resolver=self.gff_resolver,
                 gff_attributes=self.gff_attributes,
             )
-            datasets.append(dataset)
-
+            if idx % 100000 == 0:
+                print(f"Created {idx}/{n_genomes} datasets")
             if progress and task_id:
                 progress.update(task_id, advance=1)
-
+        
         if progress and task_id:
             progress.remove_task(task_id)
-
+        
         return datasets
 
     def extract_clusters(
