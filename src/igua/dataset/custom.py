@@ -1,5 +1,7 @@
+from asyncio.log import logger
 import pathlib
 import typing
+import multiprocessing.pool
 from dataclasses import dataclass
 
 import pandas as pd
@@ -14,7 +16,7 @@ class InMemoryClusterDataset(FastaGFFDataset):
 
     def __init__(
         self,
-        clusters_grouped: pd.core.groupby.DataFrameGroupBy,
+        clusters_df: pd.DataFrame,
         genome_id: str,
         gff_file: pathlib.Path,
         genome_fasta: pathlib.Path,
@@ -33,7 +35,6 @@ class InMemoryClusterDataset(FastaGFFDataset):
             gff_resolver: Custom GFF ID resolver
             gff_attributes: GFF attributes to index
         """
-        self._clusters_grouped = clusters_grouped
         self._genome_id_key = genome_id
 
         self.genome_id = genome_id
@@ -47,35 +48,35 @@ class InMemoryClusterDataset(FastaGFFDataset):
         self._gff_resolver = gff_resolver
         self._gff_attributes = gff_attributes
 
-        self._cluster_df_cache = None
-        self._protein_idx = None
-        self._gff_db = None
-        self._coordinates = None
+        self._memory_cluster_df = clusters_df
 
     @property
     def cluster_df(self) -> pd.DataFrame:
-        """Return view of the grouped DataFrame for this genome."""
-        if self._cluster_df_cache is None:
-            self._cluster_df_cache = self._clusters_grouped.get_group(self._genome_id_key)
-        return self._cluster_df_cache
+        """Override parent property to return in-memory DataFrame."""
+        return self._memory_cluster_df
+
 
     def cleanup_indexes(self):
         """Free memory by clearing heavy index objects after extraction."""
-        if self._gff_db is not None:
-            del self._gff_db
-            self._gff_db = None
+        if hasattr(self, "gff_db"):
+            del self.gff_db
+        if hasattr(self, "coordinates"):
+            del self.coordinates
+        if hasattr(self, "protein_idx"):
+            del self.protein_idx
+
+        # if self._gff_db is not None:
+        #     del self._gff_db
+        #     self._gff_db = None
         
-        if self._coordinates is not None:
-            del self._coordinates
-            self._coordinates = None
+        # if self._coordinates is not None:
+        #     del self._coordinates
+        #     self._coordinates = None
         
-        if self._protein_idx is not None:
-            del self._protein_idx
-            self._protein_idx = None
+        # if self._protein_idx is not None:
+        #     del self._protein_idx
+        #     self._protein_idx = None
         
-        if self._cluster_df_cache is not None:
-            del self._cluster_df_cache
-            self._cluster_df_cache = None
 
 class CustomTSVDataset(BaseDataset):
     """Dataset that loads clusters once and distributes across genome-specific datasets."""
@@ -88,6 +89,7 @@ class CustomTSVDataset(BaseDataset):
         gff_attributes: typing.Optional[typing.List[str]] = None,
         genome_id_column: str = "#genome",
         progress: typing.Optional[rich.progress.Progress] = None,
+        threads: int = None,
     ):
         """Initialize with cluster and metadata TSV files.
 
@@ -101,19 +103,33 @@ class CustomTSVDataset(BaseDataset):
         """
         super().__init__()
 
+        self.threads = threads # number of threads for parallel extraction of clusters
+
         self.clusters_tsv = clusters_tsv
         self.metadata_tsv = metadata_tsv
         self.gff_resolver = gff_resolver
         self.gff_attributes = gff_attributes
         self.genome_id_column = genome_id_column
-
-        self.metadata_df = pd.read_csv(metadata_tsv, sep="\t", usecols=['genome_id','genome_fasta_file', 'gff_file', 'protein_fasta_file'], dtype={'genome_id': 'str', 'gff_file': 'str', 'genome_fasta_file': 'str', 'protein_fasta_file': 'str'}).sort_values("genome_id")
-        self.metadata_df['gff_path'] = self.metadata_df['gff_file'].apply(pathlib.Path)
-        self.metadata_df['genome_fasta_path'] = self.metadata_df['genome_fasta_file'].apply(pathlib.Path)
-        self.metadata_df['protein_fasta_path'] = self.metadata_df['protein_fasta_file'].apply(pathlib.Path)
-
-        self.clusters_df = pd.read_csv(clusters_tsv, sep="\t", usecols=['#genome', 'sys_id', 'protein_in_syst'])
         
+        self.metadata_df = pd.read_csv(metadata_tsv, sep="\t", usecols=['genome_id','genome_fasta_file', 'gff_file', 'protein_fasta_file'], dtype={'genome_id': 'str', 'gff_file': 'str', 'genome_fasta_file': 'str', 'protein_fasta_file': 'str'}).sort_values("genome_id")
+        # self.metadata_df['gff_path'] = self.metadata_df['gff_file'].apply(pathlib.Path)
+        # self.metadata_df['genome_fasta_path'] = self.metadata_df['genome_fasta_file'].apply(pathlib.Path)
+        # self.metadata_df['protein_fasta_path'] = self.metadata_df['protein_fasta_file'].apply(pathlib.Path)
+
+        self.clusters_df = pd.read_csv(clusters_tsv, sep="\t", usecols=['#genome', 'sys_id', 'protein_in_syst']) # 'sys_beg', 'sys_end', 
+
+
+        duplicate_mask = self.clusters_df.duplicated(subset=['sys_id'], keep="first")
+        if duplicate_mask.any():
+            duplicate_clusters = self.clusters_df[duplicate_mask]['sys_id'].tolist()
+            n_duplicates = len(duplicate_clusters)
+
+            logger.warning(
+                f"{n_duplicates} duplicate cluster/s: "
+                f"[cyan]{', '.join(duplicate_clusters[:5])}{'...' if n_duplicates > 5 else ''}[/]"
+            )
+            self.clusters_df = self.clusters_df.drop_duplicates(subset=['sys_id'], keep="first")
+
         self.clusters_grouped = self.clusters_df.groupby(genome_id_column)
         self.datasets = self._create_datasets(progress)
 
@@ -131,11 +147,11 @@ class CustomTSVDataset(BaseDataset):
         
         for idx, row in enumerate(self.metadata_df.itertuples()):
             datasets[idx] = InMemoryClusterDataset(
-                clusters_grouped=self.clusters_grouped,
+                clusters_df=self.clusters_grouped.get_group(row.genome_id),
                 genome_id=row.genome_id,
-                gff_file=row.gff_path,
-                genome_fasta=row.genome_fasta_path,
-                protein_fasta=row.protein_fasta_path,
+                gff_file=row.gff_file,
+                genome_fasta=row.genome_fasta_file,
+                protein_fasta=row.protein_fasta_file,
                 gff_resolver=self.gff_resolver,
                 gff_attributes=self.gff_attributes,
             )
@@ -153,9 +169,18 @@ class CustomTSVDataset(BaseDataset):
         self, progress: typing.Optional[rich.progress.Progress] = None
     ) -> typing.Iterable[Cluster]:
         """Extract clusters from all datasets."""
-        for dataset in self.datasets:
-            yield from dataset.extract_clusters(progress=progress)
+        def process(dataset: InMemoryClusterDataset):
+            clusters = list(dataset.extract_clusters(progress=progress))
             dataset.cleanup_indexes()
+            return clusters
+
+        with multiprocessing.pool.ThreadPool(self.threads) as pool:
+            for clusters in pool.imap(process, self.datasets):
+                yield from clusters
+            
+        # for dataset in self.datasets:
+        #     yield from dataset.extract_clusters(progress=progress)
+        #     dataset.cleanup_indexes()
 
     def extract_proteins(
         self,
@@ -163,6 +188,15 @@ class CustomTSVDataset(BaseDataset):
         cluster_ids: typing.Optional[typing.Collection[str]] = None,
     ) -> typing.Iterable[Protein]:
         """Extract proteins from all datasets."""
-        for dataset in self.datasets:
-            yield from dataset.extract_proteins(progress, cluster_ids)
+        def process(dataset: InMemoryClusterDataset):
+            clusters = list(dataset.extract_proteins(progress, cluster_ids))
             dataset.cleanup_indexes()
+            return clusters
+
+        with multiprocessing.pool.ThreadPool(self.threads) as pool:
+            for clusters in pool.imap(process, self.datasets):
+                yield from clusters
+
+        # for dataset in self.datasets:
+        #     yield from dataset.extract_proteins(progress, cluster_ids)
+        #     dataset.cleanup_indexes()
