@@ -2,6 +2,8 @@ import collections
 import gzip
 import io
 import logging
+import functools
+from operator import ge
 import pathlib
 import re
 import typing
@@ -264,9 +266,9 @@ class GFFIndex:
         self.path = gff_path
         self._index: typing.Dict[str, typing.Dict] = {}
         self.resolver = resolver or default_resolver
-        self.index_attributes = index_attributes or [
+        self.index_attributes = set(index_attributes or [
             "ID", "locus_tag", "Name", "gene", "old_locus_tag", "protein_id"
-        ]
+        ])
         self._build_index()
 
     def _build_index(self):
@@ -285,6 +287,7 @@ class GFFIndex:
                     item.split("=", 1) for item in attrs.split(";") if "=" in item
                 )
 
+                # create a dedicated dataclass/namedtuple for GFF features to facilitate type hints
                 feature = {
                     "seqid": seqid,
                     "type": ftype,
@@ -310,6 +313,11 @@ class GFFIndex:
 class ProteinIndex:
     """Lazy-loading protein sequence index for efficient lookup."""
 
+    _ATTR_REGEX = {
+        attr: re.compile(rf"\[{attr}=([^\]]+)\]")
+        for attr in ["locus_tag", "ID", "Name", "gene", "protein_id"]
+    }
+
     def __init__(self, protein_fasta: pathlib.Path):
         """Initialize protein index without loading sequences.
 
@@ -334,8 +342,8 @@ class ProteinIndex:
                 self._sequences[seq_id] = sequence
 
             if gene_ids:
-                for attr in ["locus_tag", "ID", "Name", "gene", "protein_id"]:
-                    if match := re.search(rf"\[{attr}=([^\]]+)\]", full_header):
+                for regex in self._ATTR_REGEX.values():
+                    if match := regex.search(full_header):
                         attr_value = match.group(1)
                         if attr_value in gene_ids:
                             self._sequences[attr_value] = sequence
@@ -403,10 +411,6 @@ class FastaGFFDataset(BaseDataset):
         self._gff_resolver = gff_resolver
         self._gff_attributes = gff_attributes
 
-        self._cluster_df: typing.Optional[pd.DataFrame] = None
-        self._protein_idx: typing.Optional[ProteinIndex] = None
-        self._gff_db: typing.Optional[GFFIndex] = None
-        self._coordinates: typing.Optional[typing.List[SystemCoordinates]] = None
 
         self.is_valid = self._is_valid()
         if not self.is_valid:
@@ -459,8 +463,6 @@ class FastaGFFDataset(BaseDataset):
         Returns:
             Pandas DataFrame with filtered clusters.
         """
-        if self._cluster_df is not None:
-            return self._cluster_df
 
         use_columns = list(self.column_mapping.values())
         df = self._load_and_filter_clusters(self.cluster_table, use_columns)
@@ -479,47 +481,33 @@ class FastaGFFDataset(BaseDataset):
             )
             df = df.drop_duplicates(subset=[cluster_id], keep="first")
 
-        self._cluster_df = df
-        return self._cluster_df
+        self.cluster_df = df
+        return self.cluster_df
 
-    @property
+    @functools.cached_property
     def protein_idx(self) -> ProteinIndex:
         """Get protein index.
 
         Returns:
             ProteinIndex instance.
         """
-        if self._protein_idx is None:
-            self._protein_idx = ProteinIndex(self.protein_fasta)
-        return self._protein_idx
+        return ProteinIndex(self.protein_fasta)
 
-    @property
+    @functools.cached_property
     def gff_db(self) -> GFFIndex:
         """Get GFF index with configured resolver."""
-        if self._gff_db is None:
-            self._gff_db = GFFIndex(
-                self.gff_file,
-                resolver=self._gff_resolver,
-                index_attributes=self._gff_attributes,
-            )
-        return self._gff_db
+        return GFFIndex(
+            self.gff_file,
+            resolver=self._gff_resolver,
+            index_attributes=self._gff_attributes,
+        )
 
-    @property
+    @functools.cached_property
     def coordinates(self) -> typing.List[SystemCoordinates]:
-        """Build cluster coordinates.
+        """Parse coordinates from cluster DataFrame and build cluster coordinates.
 
         Returns:
             List of SystemCoordinates for all clusters.
-        """
-        if self._coordinates is None:
-            self._coordinates = self._build_coordinates()
-        return self._coordinates
-
-    def _build_coordinates(self) -> typing.List[SystemCoordinates]:
-        """Parse coordinates from cluster DataFrame.
-
-        Returns:
-            List of SystemCoordinates for each cluster.
         """
         coordinates = []
         for _, row in self.cluster_df.iterrows():
