@@ -175,11 +175,10 @@ class SystemCoordinates:
         return cls(**data)
 
 
-
 class IDResolver(typing.Protocol):
     """Protocol for gene ID resolution strategies."""
     
-    def __call__(self, gene_id: str, index: typing.Dict[str, typing.Dict]) -> typing.Optional[typing.Dict]:
+    def __call__(self, gene_id: str, index: typing.Dict[str, GFFFeature]) -> typing.Optional[GFFFeature]:
         """Resolve gene_id to GFF feature.
         
         Args:
@@ -192,7 +191,7 @@ class IDResolver(typing.Protocol):
         ...
 
 
-def default_resolver(gene_id: str, index: typing.Dict[str, typing.Dict]) -> typing.Optional[typing.Dict]:
+def default_resolver(gene_id: str, index: typing.Dict[str, GFFFeature]) -> typing.Optional[GFFFeature]:
     """Default resolution with common transformations."""
     if result := index.get(gene_id):
         return result
@@ -206,7 +205,7 @@ def default_resolver(gene_id: str, index: typing.Dict[str, typing.Dict]) -> typi
             return result
 
 
-def strict_resolver(gene_id: str, index: typing.Dict[str, typing.Dict]) -> typing.Optional[typing.Dict]:
+def strict_resolver(gene_id: str, index: typing.Dict[str, GFFFeature]) -> typing.Optional[GFFFeature]:
     """Strict resolver - only exact matches."""
     return index.get(gene_id)
 
@@ -220,7 +219,7 @@ def create_mapping_resolver(mapping: typing.Dict[str, str]) -> IDResolver:
     Returns:
         Resolver function that uses the mapping
     """
-    def resolver(gene_id: str, index: typing.Dict[str, typing.Dict]) -> typing.Optional[typing.Dict]:
+    def resolver(gene_id: str, index: typing.Dict[str, GFFFeature]) -> typing.Optional[GFFFeature]:
         gff_id = mapping.get(gene_id, gene_id)
         return index.get(gff_id)
     return resolver
@@ -237,7 +236,7 @@ def create_transform_resolver(
     Returns:
         Resolver that tries each transformation in order
     """
-    def resolver(gene_id: str, index: typing.Dict[str, typing.Dict]) -> typing.Optional[typing.Dict]:
+    def resolver(gene_id: str, index: typing.Dict[str, GFFFeature]) -> typing.Optional[GFFFeature]:
         if result := index.get(gene_id):
             return result
         for transform in transforms:
@@ -245,6 +244,15 @@ def create_transform_resolver(
                 return result
         return None
     return resolver
+
+
+class GFFFeature(typing.NamedTuple):
+    seqid: str
+    type: str
+    start: int
+    end: int
+    strand: str
+    attributes: typing.Dict[str, str]
 
 
 class GFFIndex:
@@ -264,7 +272,7 @@ class GFFIndex:
             index_attributes: Which GFF attributes to index
         """
         self.path = gff_path
-        self._index: typing.Dict[str, typing.Dict] = {}
+        self._index: typing.Dict[str, GFFFeature] = {}
         self.resolver = resolver or default_resolver
         self.index_attributes = set(index_attributes or [
             "ID", "locus_tag", "Name", "gene", "old_locus_tag", "protein_id"
@@ -287,27 +295,25 @@ class GFFIndex:
                     item.split("=", 1) for item in attrs.split(";") if "=" in item
                 )
 
-                # create a dedicated dataclass/namedtuple for GFF features to facilitate type hints
-                feature = {
-                    "seqid": seqid,
-                    "type": ftype,
-                    "start": int(start),
-                    "end": int(end),
-                    "strand": strand,
-                    "attributes": attr_dict,
-                }
+                feature = GFFFeature(
+                    seqid=seqid,
+                    type=ftype,
+                    start=int(start),
+                    end=int(end),
+                    strand=strand,
+                    attributes=attr_dict,
+                )
 
                 for key in self.index_attributes:
                     if val := attr_dict.get(key):
                         self._index[val] = feature
 
-    def get(self, gene_id: str) -> typing.Optional[typing.Dict]:
+    def get(self, gene_id: str) -> typing.Optional[GFFFeature]:
         """Get feature using configured resolver."""
         return self.resolver(gene_id, self._index)
 
     def __contains__(self, gene_id: str) -> bool:
         return self.get(gene_id) is not None
-
 
 
 class ProteinIndex:
@@ -550,7 +556,7 @@ class FastaGFFDataset(BaseDataset):
                 f"Genes not found in GFF: {', '.join(missing[:3])}",
             )
 
-        seq_ids = {feat["seqid"] for feat in features}
+        seq_ids = {feat.seqid for feat in features}
         if len(seq_ids) > 1:
             return self._invalid_coord(
                 cluster_id, gene_list, f"Genes span multiple contigs: {seq_ids}"
@@ -558,10 +564,10 @@ class FastaGFFDataset(BaseDataset):
 
         seq_id = seq_ids.pop()
 
-        start = min(min(feat["start"], feat["end"]) for feat in features)
-        end = max(max(feat["start"], feat["end"]) for feat in features)
+        start = min(min(feat.start, feat.end) for feat in features)
+        end = max(max(feat.start, feat.end) for feat in features)
 
-        strand = features[0]["strand"]
+        strand = features[0].strand
 
         region_size = end - start + 1
         if region_size > 1e5:
