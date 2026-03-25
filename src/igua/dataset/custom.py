@@ -1,4 +1,5 @@
 from asyncio.log import logger
+import functools
 import pathlib
 import typing
 import multiprocessing.pool
@@ -8,7 +9,7 @@ import pandas as pd
 import rich.progress
 
 from .base import BaseDataset, Cluster, Protein
-from .fasta_gff import FastaGFFDataset, IDResolver
+from .fasta_gff import FastaGFFDataset, IDResolver, SystemCoordinates
 
 
 class InMemoryClusterDataset(FastaGFFDataset):
@@ -65,18 +66,70 @@ class InMemoryClusterDataset(FastaGFFDataset):
         if hasattr(self, "protein_idx"):
             del self.protein_idx
 
-        # if self._gff_db is not None:
-        #     del self._gff_db
-        #     self._gff_db = None
+    @functools.cached_property
+    def coordinates(self) -> typing.List[SystemCoordinates]:
+        """Override to use fast iteration and optimized, decoupled boundary parsing."""
+        coords = []
         
-        # if self._coordinates is not None:
-        #     del self._coordinates
-        #     self._coordinates = None
+        gff_get = self.gff_db.get
+        genome_fasta_str = str(self.genome_fasta)
+        genome_id = self.genome_id
         
-        # if self._protein_idx is not None:
-        #     del self._protein_idx
-        #     self._protein_idx = None
-        
+        for row in self.cluster_df.itertuples(index=False):
+            cluster_id = str(row.sys_id)
+            
+            raw_genes = str(row.protein_in_syst)
+            gene_list = [g for g in (x.strip() for x in raw_genes.split(",")) if g]
+            
+            if not gene_list:
+                coords.append(self._invalid_coord(cluster_id, [], "Empty gene list"))
+                continue
+            
+            beg_gene = str(row.sys_beg).strip()
+            end_gene = str(row.sys_end).strip()
+            
+            feat_beg = gff_get(beg_gene)
+            feat_end = gff_get(end_gene)
+            
+            if not feat_beg or not feat_end:
+                missing = [g for g, f in [(beg_gene, feat_beg), (end_gene, feat_end)] if not f]
+                coords.append(self._invalid_coord(
+                    cluster_id, 
+                    gene_list, 
+                    f"Boundary genes not found in GFF: {', '.join(missing)}"
+                ))
+                continue
+                
+            if feat_beg.seqid != feat_end.seqid:
+                coords.append(self._invalid_coord(
+                    cluster_id, 
+                    gene_list, 
+                    f"Genes span multiple contigs: {feat_beg.seqid} and {feat_end.seqid}"
+                ))
+                continue
+                
+            start = min(feat_beg.start, feat_beg.end, feat_end.start, feat_end.end)
+            end = max(feat_beg.start, feat_beg.end, feat_end.start, feat_end.end)
+            
+            region_size = end - start + 1
+            if region_size > 100000:
+                logger.info(f"Cluster {cluster_id} unusually large: {region_size:,} bp (genome: [bold cyan]{genome_id}[/])")
+            elif region_size < 50:
+                logger.info(f"Cluster {cluster_id} unusually small: {region_size} bp (genome: [bold cyan]{genome_id}[/])")
+                
+            coords.append(SystemCoordinates(
+                cluster_id=cluster_id,
+                seq_id=feat_beg.seqid,
+                start_coord=start,
+                end_coord=end,
+                strand=feat_beg.strand,
+                genes=gene_list,
+                fasta_file=genome_fasta_str,
+                valid=True
+            ))
+            
+        return coords
+
 
 class CustomTSVDataset(BaseDataset):
     """Dataset that loads clusters once and distributes across genome-specific datasets."""
@@ -112,11 +165,9 @@ class CustomTSVDataset(BaseDataset):
         self.genome_id_column = genome_id_column
         
         self.metadata_df = pd.read_csv(metadata_tsv, sep="\t", usecols=['genome_id','genome_fasta_file', 'gff_file', 'protein_fasta_file'], dtype={'genome_id': 'str', 'gff_file': 'str', 'genome_fasta_file': 'str', 'protein_fasta_file': 'str'}).sort_values("genome_id")
-        # self.metadata_df['gff_path'] = self.metadata_df['gff_file'].apply(pathlib.Path)
-        # self.metadata_df['genome_fasta_path'] = self.metadata_df['genome_fasta_file'].apply(pathlib.Path)
-        # self.metadata_df['protein_fasta_path'] = self.metadata_df['protein_fasta_file'].apply(pathlib.Path)
 
-        self.clusters_df = pd.read_csv(clusters_tsv, sep="\t", usecols=['#genome', 'sys_id', 'protein_in_syst']) # 'sys_beg', 'sys_end', 
+
+        self.clusters_df = pd.read_csv(clusters_tsv, sep="\t", usecols=['#genome', 'sys_id', 'protein_in_syst', 'sys_beg', 'sys_end']) 
 
 
         duplicate_mask = self.clusters_df.duplicated(subset=['sys_id'], keep="first")
@@ -177,10 +228,6 @@ class CustomTSVDataset(BaseDataset):
         with multiprocessing.pool.ThreadPool(self.threads) as pool:
             for clusters in pool.imap(process, self.datasets):
                 yield from clusters
-            
-        # for dataset in self.datasets:
-        #     yield from dataset.extract_clusters(progress=progress)
-        #     dataset.cleanup_indexes()
 
     def extract_proteins(
         self,
@@ -196,7 +243,3 @@ class CustomTSVDataset(BaseDataset):
         with multiprocessing.pool.ThreadPool(self.threads) as pool:
             for clusters in pool.imap(process, self.datasets):
                 yield from clusters
-
-        # for dataset in self.datasets:
-        #     yield from dataset.extract_proteins(progress, cluster_ids)
-        #     dataset.cleanup_indexes()
