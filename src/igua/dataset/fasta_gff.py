@@ -516,18 +516,18 @@ class FastaGFFDataset(BaseDataset):
             List of SystemCoordinates for all clusters.
         """
         coordinates = []
-        for _, row in self.cluster_df.iterrows():
+        for row in self.cluster_df.itertuples(index=False):
             coord = self._parse_cluster_coordinates(row)
             coordinates.append(coord)
         return coordinates
 
-    def _parse_cluster_coordinates(self, row: dict) -> SystemCoordinates:
+    def _parse_cluster_coordinates(self, row: tuple) -> SystemCoordinates:
         """Parse coordinates for a single cluster.
 
         Uses adapter's column mapping for format flexibility.
 
         Args:
-            row: Dictionary containing cluster data from TSV row.
+            row: Tuple containing cluster data from TSV row.
 
         Returns:
             SystemCoordinates instance.
@@ -798,14 +798,14 @@ class MetadataTSVDataset(BaseDataset):
 
         self.datasets = [
             FastaGFFDataset(
-                cluster_table=pathlib.Path(row["cluster_table"]),
-                gff_file=pathlib.Path(row["gff_file"]),
-                genome_fasta=pathlib.Path(row["genome_fasta_file"]),
-                protein_fasta=pathlib.Path(row["protein_fasta_file"]),
+                cluster_table=pathlib.Path(row.cluster_table),
+                gff_file=pathlib.Path(row.gff_file),
+                genome_fasta=pathlib.Path(row.genome_fasta_file),
+                protein_fasta=pathlib.Path(row.protein_fasta_file),
                 column_mapping=column_mapping,
                 genome_id=row.get("genome_id", None),
             )
-            for _, row in self.cluster_metadata_df.iterrows()
+            for row in self.cluster_metadata_df.itertuples(index=False)
         ]
         pass
 
