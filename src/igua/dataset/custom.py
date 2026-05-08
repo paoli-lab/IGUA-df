@@ -56,7 +56,6 @@ class InMemoryClusterDataset(FastaGFFDataset):
         """Override parent property to return in-memory DataFrame."""
         return self._memory_cluster_df
 
-
     def cleanup_indexes(self):
         """Free memory by clearing heavy index objects after extraction."""
         if hasattr(self, "gff_db"):
@@ -70,53 +69,48 @@ class InMemoryClusterDataset(FastaGFFDataset):
     def coordinates(self) -> typing.List[SystemCoordinates]:
         """Override to use fast iteration and optimized, decoupled boundary parsing."""
         coords = []
-        
+
         gff_get = self.gff_db.get
         genome_fasta_str = str(self.genome_fasta)
         genome_id = self.genome_id
-        
+
         for row in self.cluster_df.itertuples(index=False):
             cluster_id = str(row.sys_id)
-            
+
             raw_genes = str(row.protein_in_syst)
             gene_list = [g for g in (x.strip() for x in raw_genes.split(",")) if g]
-            
+
             if not gene_list:
-                coords.append(self._invalid_coord(cluster_id, [], "Empty gene list"))
+                logger.warning(f"Cluster {cluster_id} has empty gene list (genome: [bold cyan]{genome_id}[/])")
                 continue
-            
+
             beg_gene = str(row.sys_beg).strip()
             end_gene = str(row.sys_end).strip()
-            
+
             feat_beg = gff_get(beg_gene)
             feat_end = gff_get(end_gene)
-            
+
             if not feat_beg or not feat_end:
                 missing = [g for g, f in [(beg_gene, feat_beg), (end_gene, feat_end)] if not f]
-                coords.append(self._invalid_coord(
-                    cluster_id, 
-                    gene_list, 
-                    f"Boundary genes not found in GFF: {', '.join(missing)}"
-                ))
+                logger.warning(f"Cluster {cluster_id} boundary genes not found in GFF: {', '.join(missing)} (genome: [bold cyan]{genome_id}[/])")
                 continue
-                
+
             if feat_beg.seqid != feat_end.seqid:
-                coords.append(self._invalid_coord(
-                    cluster_id, 
-                    gene_list, 
-                    f"Genes span multiple contigs: {feat_beg.seqid} and {feat_end.seqid}"
-                ))
+                logger.warning(f"Cluster {cluster_id} genes span multiple contigs: {feat_beg.seqid} and {feat_end.seqid} (genome: [bold cyan]{genome_id}[/])")
                 continue
-                
+
             start = min(feat_beg.start, feat_beg.end, feat_end.start, feat_end.end)
             end = max(feat_beg.start, feat_beg.end, feat_end.start, feat_end.end)
-            
+
             region_size = end - start + 1
-            if region_size > 100000:
-                logger.info(f"Cluster {cluster_id} unusually large: {region_size:,} bp (genome: [bold cyan]{genome_id}[/])")
-            elif region_size < 50:
-                logger.info(f"Cluster {cluster_id} unusually small: {region_size} bp (genome: [bold cyan]{genome_id}[/])")
-                
+            if region_size > 3e4:
+                logger.warning(f"Cluster {cluster_id} unusually large: {region_size:,} bp (genome: [bold cyan]{genome_id}[/])")
+                continue
+
+            elif region_size < 1e2:
+                logger.warning(f"Cluster {cluster_id} unusually small: {region_size} bp (genome: [bold cyan]{genome_id}[/])")
+                continue
+
             coords.append(SystemCoordinates(
                 cluster_id=cluster_id,
                 seq_id=feat_beg.seqid,
@@ -127,7 +121,7 @@ class InMemoryClusterDataset(FastaGFFDataset):
                 fasta_file=genome_fasta_str,
                 valid=True
             ))
-            
+
         return coords
 
 
