@@ -103,7 +103,7 @@ class InMemoryClusterDataset(FastaGFFDataset):
             end = max(feat_beg.start, feat_beg.end, feat_end.start, feat_end.end)
 
             region_size = end - start + 1
-            if region_size > 3e4:
+            if region_size > 5e4:
                 logger.warning(f"Cluster {cluster_id} unusually large: {region_size:,} bp (genome: [bold cyan]{genome_id}[/])")
                 continue
 
