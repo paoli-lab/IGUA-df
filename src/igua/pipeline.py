@@ -700,6 +700,8 @@ class Pipeline:
                     representatives,
                     mmseqs,
                 )
+                compositions_file = "/science/radoykov/df_clustering_intermediate_results/representatives_compositions.h5ad"
+                compositions.write(compositions_file)
                 gcfs3 = self._hierarchical_clustering(
                     compositions,
                 )
