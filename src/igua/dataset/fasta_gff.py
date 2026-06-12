@@ -29,6 +29,8 @@ console.setLevel(logging.INFO)
 console.setFormatter(logging.Formatter("%(message)s"))
 logger.addHandler(console)
 
+#### TODO: move logger to an appropriate module and 
+# configure in main script, not in dataset module
 file_handler = logging.FileHandler("extraction.log")
 file_handler.setLevel(logging.DEBUG)
 file_handler.setFormatter(
@@ -574,11 +576,25 @@ class FastaGFFDataset(BaseDataset):
             logger.info(
                 f"Cluster {cluster_id} unusually large: {region_size:,} bp (genome: [bold cyan]{self.genome_id}[/])"
             )
+            return self._invalid_coord(
+                cluster_id,
+                gene_list,
+                f"Cluster unusually large: {region_size:,} bp",
+                seq_id=seq_id,
+            )
 
         elif region_size < 50:
             logger.info(
                 f"Cluster {cluster_id} unusually small: {region_size} bp (genome: [bold cyan]{self.genome_id}[/])"
             )
+            return self._invalid_coord(
+                cluster_id,
+                gene_list,
+                f"Cluster unusually small: {region_size} bp",
+                seq_id=seq_id,
+            )
+
+            
 
         return SystemCoordinates(
             cluster_id=cluster_id,
