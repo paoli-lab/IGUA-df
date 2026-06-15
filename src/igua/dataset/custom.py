@@ -44,7 +44,9 @@ class InMemoryClusterDataset(FastaGFFDataset):
         self.protein_fasta = protein_fasta
         self.column_mapping = {
             "cluster_id": "sys_id",
-            "genes_in_cluster": "protein_in_syst",
+            "genes_in_cluster": "hit_ids",
+            "sys_beg": "sys_start",
+            "sys_end": "sys_end",
         }
         self._gff_resolver = gff_resolver
         self._gff_attributes = gff_attributes
@@ -75,17 +77,16 @@ class InMemoryClusterDataset(FastaGFFDataset):
         genome_id = self.genome_id
 
         for row in self.cluster_df.itertuples(index=False):
-            cluster_id = str(row.sys_id)
-
-            raw_genes = str(row.protein_in_syst)
+            cluster_id = str(getattr(row, self.column_mapping["cluster_id"])).strip()
+            raw_genes = str(getattr(row, self.column_mapping["genes_in_cluster"])).strip()
             gene_list = [g for g in (x.strip() for x in raw_genes.split(",")) if g]
 
             if not gene_list:
                 logger.warning(f"Cluster {cluster_id} has empty gene list (genome: [bold cyan]{genome_id}[/])")
                 continue
 
-            beg_gene = str(row.sys_beg).strip()
-            end_gene = str(row.sys_end).strip()
+            beg_gene = str(getattr(row, self.column_mapping["sys_beg"])).strip()
+            end_gene = str(getattr(row, self.column_mapping["sys_end"])).strip()
 
             feat_beg = gff_get(beg_gene)
             feat_end = gff_get(end_gene)
@@ -160,8 +161,7 @@ class CustomTSVDataset(BaseDataset):
         
         self.metadata_df = pd.read_csv(metadata_tsv, sep="\t", usecols=['genome_id','genome_fasta_file', 'gff_file', 'protein_fasta_file'], dtype={'genome_id': 'str', 'gff_file': 'str', 'genome_fasta_file': 'str', 'protein_fasta_file': 'str'}).sort_values("genome_id")
 
-
-        self.clusters_df = pd.read_csv(clusters_tsv, sep="\t", usecols=['#genome', 'sys_id', 'protein_in_syst', 'sys_beg', 'sys_end']) 
+        self.clusters_df = pd.read_csv(clusters_tsv, sep="\t", usecols=['mag_id', 'sys_id', 'hit_ids', 'sys_start', 'sys_end']) 
 
 
         duplicate_mask = self.clusters_df.duplicated(subset=['sys_id'], keep="first")
